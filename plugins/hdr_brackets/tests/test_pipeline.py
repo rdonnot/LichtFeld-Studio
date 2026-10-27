@@ -14,6 +14,7 @@ from hdr_brackets import cli
 from hdr_brackets._tools import read_exr
 from hdr_brackets.dataset import read_proxy
 from hdr_brackets.pipeline import STAGES, Options, run
+from hdr_brackets.response import CRF, compare_crf
 
 
 @pytest.fixture(scope="module")
@@ -46,6 +47,69 @@ def test_run_end_to_end(set3, run3) -> None:
     # one shared proxy scale (photometrically consistent proxies)
     assert len({p["proxy_scale"] for p in idx["positions"]}) == 1
     assert json.loads((out / "brackets.json").read_text())["brackets"][0]["position_index"] == 0
+
+
+def test_index_ev_words_and_saturation(set3, run3) -> None:
+    """exif_ev / ev_step mean what exposures_gt.json's exif_ev / ev mean; saturated counts the shortest frame."""
+    _, out, _ = run3
+    idx = json.loads((out / "exposures.json").read_text())
+    truth = {r["file"]: r for r in set3.images()}
+    for pos in idx["positions"]:
+        for s in pos["sources"]:
+            assert s["exif_ev"] == pytest.approx(truth[s["file"]]["exif_ev"], abs=1e-6)
+            assert s["ev_step"] == pytest.approx(truth[s["file"]]["ev"], abs=1e-6)
+            assert s["align"] in ("reference", "mtb", "clipped", "failed")
+        darkest = Image.open(set3.raw_dir / pos["sources"][0]["file"]).convert("RGB")
+        assert pos["saturated"] == int(np.any(np.asarray(darkest) >= 250, axis=2).sum())
+    assert idx["stats"]["saturated_total"] == sum(p["saturated"] for p in idx["positions"])
+    assert idx["stats"]["shift_max"] == 0
+
+
+def test_five_ev_set_end_to_end(set5ev, tmp_path: Path) -> None:
+    """The camera's default −4…+4 EV with one view whose mid frame is clipped: no shift anywhere, the CRF and the
+    merge stay accurate (on the 5-EV room the old code shifted 37 frames, up to 31 px, and the CRF was off 0.395)."""
+    report = run(set5ev.raw_dir, tmp_path / "o", Options(run_sfm=False))
+    assert report.n_positions == 4 and report.flagged == []
+    assert report.stats["shift_max"] == 0 and report.stats["align_failed"] == 0
+    assert report.stats["align_clipped"] >= 5  # every +4 EV frame, and the bright view's 0 EV frame
+    assert report.stats["frames_clipped_over_90"] >= 1
+    assert any("clipped" in w and "%" in w for w in report.warnings)
+    assert not any("MTB search" in w for w in report.warnings)
+    idx = json.loads((tmp_path / "o/exposures.json").read_text())
+    assert all(s["shift"] == [0, 0] for p in idx["positions"] for s in p["sources"])
+    crf = CRF.load(tmp_path / "o/crf.json")
+    assert crf.meta["frames"] == "raw" and len(crf.meta["bracket_ids"]) == 4
+    err = compare_crf(crf, CRF.from_dict(set5ev.crf_truth))
+    assert err < 0.2, err
+    gt = {r["file"]: r for r in set5ev.images()}
+    for pos in idx["positions"]:
+        vi = gt[pos["sources"][0]["file"]]["view_index"]
+        zero = next(s for s in pos["sources"] if gt[s["file"]]["ev"] == 0.0)
+        z0 = np.asarray(Image.open(set5ev.raw_dir / zero["file"]).convert("RGB"))
+        mask = np.all((z0 > 5) & (z0 < 250), axis=2)
+        if mask.mean() < 0.05:
+            continue  # the bright view's 0 EV frame is clipped almost everywhere
+        hdr, truth = read_exr(tmp_path / "o" / pos["hdr"])[mask], set5ev.truth(vi)[mask]
+        rel = np.abs(hdr * np.exp(np.median(np.log(truth / hdr))) - truth) / truth
+        assert np.median(rel) < 0.05, (pos["name"], np.median(rel))
+
+
+def test_iso_or_aperture_change_is_warned(set3, tmp_path: Path) -> None:
+    from hdr_brackets.exif import ExposureInfo
+    from hdr_brackets.grouping import Bracket
+    from hdr_brackets.pipeline import setting_warnings
+
+    def info(name: str, iso: float, n: float) -> ExposureInfo:
+        return ExposureInfo(f"/x/{name}", 0.01, n, iso, None, None, 8, 8)
+
+    same = Bracket(0, [info("a", 100, 4.0), info("b", 100, 4.0)], 0)
+    inside = Bracket(1, [info("c", 100, 4.0), info("d", 400, 4.0)], 1)
+    other = Bracket(2, [info("e", 100, 5.6), info("f", 100, 5.6)], 2)
+    assert setting_warnings([same]) == []
+    w = setting_warnings([same, inside])
+    assert len(w) == 1 and "ISO varies inside 1 bracket" in w[0] and "bracket 1: 100, 400" in w[0]
+    w = setting_warnings([same, other])
+    assert len(w) == 1 and "f-number varies across the shoot" in w[0] and "f/4, f/5.6" in w[0]
 
 
 def test_progress_reported_per_stage_and_bracket(run3) -> None:

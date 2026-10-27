@@ -4,15 +4,23 @@ Stages, in order: read EXIF → group into brackets (+ manual overrides) → per
 ghosting → calibrate the CRF on a sample of brackets (or load a saved one) → merge each bracket to a linear EXR →
 tonemapped proxies → crf.json + exposures.json → SfM on the proxies → Report. The layout is dataset.py's.
 
+The CRF is calibrated on RAW (unshifted) frames of brackets whose MTB shifts are all ≤ `Options.crf_max_shift` px:
+a 1-px shift is harmless to the response, a wrong one is fatal — one bracket shifted by a failed search poisoned the
+whole curve (review 2026-10-27: 0.395 nats from shifted frames, 0.161 from the same frames unshifted). Only when no
+bracket qualifies are the least-shifted ones used, aligned, with a warning.
+
+Warnings beyond a skipped bracket: ISO or f-number varying inside a bracket or across the shoot (the merge weighs
+frames by exposure time only), an MTB search that hit its limit, frames more than `CLIPPED_WARN` clipped.
+
 Contract with the LichtFeld UI layer (plugins/hdr_brackets/operators.py): `Options` fields and `Report` fields as
 below; `progress(stage_label, fraction)` is called at least once per stage and once per bracket, from the calling
 thread, with `fraction` the share of the WHOLE run done (0 → 1, non-decreasing) — a progress bar can show it as is.
 An exception raised by `progress` propagates (that is how a caller cancels). A bad bracket never raises: it is
 skipped and named in `Report.warnings`. Only a missing source folder raises (FileNotFoundError).
 
-Memory: a bracket is loaded twice (align, then merge) rather than kept, the CRF sample brackets are kept subsampled
-to ≤ 1024 px (nearest — 8-bit levels are preserved), and EXRs are written as they are merged, so a few hundred
-24 MP brackets fit.
+Memory: a bracket is loaded twice (align, then merge) rather than kept, the CRF brackets (≤ `crf_max_brackets`) a
+third time, subsampled to ≤ 1024 px (nearest — 8-bit levels are preserved), and EXRs are written as they are merged,
+so a few hundred 24 MP brackets fit.
 """
 
 from __future__ import annotations
@@ -56,6 +64,12 @@ STAGES: dict[str, tuple[float, float]] = {
 CRF_SAMPLE_MAX_SIDE = 1024
 #: Below this registered share the report warns (PLAN.md M1: SfM registers ≥ 95 % of positions).
 SFM_MIN_REGISTERED = 0.95
+#: A frame with more than this share of its pixels clipped (any channel ≥ 250, or every channel ≤ 5) is reported.
+CLIPPED_WARN = 0.90
+#: 8-bit level from which a pixel counts as saturated (the merge's lower-bound pixels, `saturated` per position).
+SATURATED_LEVEL = 250
+#: ISO / f-number values closer than this (relative) are "the same" (EXIF rationals round).
+SETTING_RTOL = 0.02
 BRACKETS_FILE = "brackets.json"
 
 
@@ -74,8 +88,9 @@ class Options:
     min_size: int = 2
     max_size: int = 9
     crf_samples: int = 1000  # per bracket (response.py: why not OpenCV's 70)
-    crf_lambda: float = 30.0
+    crf_lambda: float = 100.0  # response.py: why not 30
     crf_max_brackets: int = 12
+    crf_max_shift: int = 2  # a calibration bracket's largest MTB shift (px)
 
 
 @dataclass
@@ -110,6 +125,11 @@ class _Aligned:
     shifts: list[tuple[int, int]]
     score: float
     flagged: bool
+    status: list[str] = field(default_factory=list)
+
+    @property
+    def shift_max(self) -> int:
+        return max((max(abs(int(dx)), abs(int(dy))) for dx, dy in self.shifts), default=0)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -183,6 +203,51 @@ def group_folder(src_dir: str | Path, options: Options | None = None) -> list[Br
     if o.overrides:
         br = apply_overrides(br, o.overrides, o.min_size, o.max_size)
     return br
+
+
+def clipped_fraction(img: np.ndarray) -> float:
+    """Share of pixels clipped: any channel ≥ SATURATED_LEVEL, or every channel ≤ 5."""
+    a = np.asarray(img)
+    return float((np.any(a >= SATURATED_LEVEL, axis=2) | np.all(a <= 5, axis=2)).mean())
+
+
+def saturated_count(img: np.ndarray) -> int:
+    """Pixels with any channel ≥ SATURATED_LEVEL (in the shortest exposure: radiance known only as a lower bound)."""
+    return int(np.any(np.asarray(img) >= SATURATED_LEVEL, axis=2).sum())
+
+
+def _distinct(values: list[float | None], rtol: float = SETTING_RTOL) -> list[float]:
+    """The distinct values (None ignored), two values within `rtol` of each other being one."""
+    out: list[float] = []
+    for v in sorted(float(x) for x in values if x is not None):
+        if not out or abs(v - out[-1]) > rtol * max(abs(v), abs(out[-1])):
+            out.append(v)
+    return out
+
+
+def setting_warnings(brackets: list[Bracket]) -> list[str]:
+    """ISO / f-number that vary inside a bracket or across the shoot. The merge uses exposure time only, while the
+    `exif_ev` written to exposures.json is log2(t·ISO/N²): a frame shot at another ISO or aperture is mis-weighted
+    inside its bracket (wrong radiance), and positions shot at different settings differ in EXR scale."""
+    out: list[str] = []
+    for label, attr, fmt in (("ISO", "iso", "{:g}"), ("f-number", "fnumber", "f/{:g}")):
+        inside = []
+        for b in brackets:
+            d = _distinct([getattr(m, attr) for m in b.members])
+            if len(d) > 1:
+                inside.append(f"bracket {b.id}: {', '.join(fmt.format(v) for v in d)}")
+        if inside:
+            out.append(
+                f"{label} varies inside {len(inside)} bracket(s) ({'; '.join(inside[:4])}{' …' if len(inside) > 4 else ''}):"
+                " the merge weighs frames by exposure time only, so those brackets' EXRs are wrong"
+            )
+        shoot = _distinct([getattr(m, attr) for b in brackets for m in b.members])
+        if len(shoot) > 1 and not inside:
+            out.append(
+                f"{label} varies across the shoot ({', '.join(fmt.format(v) for v in shoot)}): the EXRs are scaled by "
+                "exposure time only, so positions shot at different settings differ in brightness by that ratio"
+            )
+    return out
 
 
 def _crf_sample_ids(brackets: list[Bracket], k: int) -> set[int]:
@@ -270,6 +335,8 @@ def run(
             warn(f"bracket {b.id} ({', '.join(b.names)}): {b.issue}; skipped")
     sizes = Counter(len(b.members) for b in good)
     log.info("%d images → %d brackets (sizes %s), %d singleton(s)", len(infos), len(good), dict(sizes), n_singletons)
+    for msg in setting_warnings(good):
+        warn(msg)
     prog("Grouping brackets", 1.0)
     common = dict(n_images=len(infos), n_brackets=len(good), n_singletons=n_singletons)
     if not good:
@@ -277,11 +344,8 @@ def run(
         return report(**common)
 
     # ── 3 Align ──
-    need_crf = o.crf_path is None
-    sample_ids = _crf_sample_ids(good, o.crf_max_brackets) if need_crf else set()
-    samples_imgs: list[list[np.ndarray]] = []
-    samples_times: list[list[float]] = []
     aligned: list[_Aligned] = []
+    clipped_frames: list[tuple[str, float]] = []
     for k, b in enumerate(good):
         prog("Aligning", k / len(good), f"Aligning bracket {k + 1}/{len(good)}")
         members = b.by_exposure()
@@ -292,14 +356,29 @@ def run(
             skipped.append(f"bracket {b.id}")
             warn(f"bracket {b.id} ({', '.join(b.names)}): {e}; skipped")
             continue
+        for m, im in zip(members, imgs, strict=True):
+            cf = clipped_fraction(im)
+            if cf > CLIPPED_WARN:
+                clipped_frames.append((m.name, cf))
+        if r.failed:
+            lim = (1 << r.max_bits) - 1
+            warn(
+                f"bracket {b.id}: MTB search reached its ±{lim} px limit on "
+                + ", ".join(members[i].name for i in r.failed)
+                + " (failed, not a measurement): kept unshifted"
+            )
         flagged = r.score > o.ghost_threshold
         if flagged:
             log.info("bracket %d: ghost score %.3f > %.3f, flagged", b.id, r.score, o.ghost_threshold)
-        aligned.append(_Aligned(b, members, r.shifts, r.score, flagged))
-        if b.id in sample_ids:
-            samples_imgs.append([_subsample(im) for im in r.images])
-            samples_times.append([float(m.exposure_time) for m in members])
+        aligned.append(_Aligned(b, members, r.shifts, r.score, flagged, r.status))
     prog("Aligning", 1.0)
+    if clipped_frames:
+        warn(
+            f"{len(clipped_frames)} frame(s) more than {CLIPPED_WARN:.0%} clipped (they add little to the merge and "
+            "cannot be aligned): "
+            + ", ".join(f"{n} {100 * f:.1f} %" for n, f in clipped_frames[:8])
+            + (" …" if len(clipped_frames) > 8 else "")
+        )
     if not aligned:
         warn("every bracket failed to load or align")
         return report(**common)
@@ -307,22 +386,43 @@ def run(
     # ── 4 CRF ──
     prog("Calibrating CRF", 0.0)
     crf_file = out / ds.CRF_FILE
+    crf_brackets: list[int] = []
     try:
         if o.crf_path:
             crf = CRF.load(o.crf_path)
             log.info("CRF loaded from %s", o.crf_path)
         else:
-            if not samples_imgs:  # the sampled brackets all failed: take what aligned
-                for a in aligned[: o.crf_max_brackets]:
-                    imgs = [load_rgb8(m.path) for m in a.members]
-                    samples_imgs.append([_subsample(im) for im in align_mod.apply_shifts(imgs, a.shifts)])
-                    samples_times.append([float(m.exposure_time) for m in a.members])
+            steady = [a for a in aligned if a.shift_max <= o.crf_max_shift]
+            calm = [a for a in steady if not a.flagged] or steady
+            apply = False
+            if not calm:  # every bracket moved: the least-moved ones, aligned
+                calm = sorted(aligned, key=lambda a: a.shift_max)[: o.crf_max_brackets]
+                apply = True
+                warn(
+                    f"CRF: no bracket has all its shifts ≤ {o.crf_max_shift} px; calibrated on the "
+                    f"{len(calm)} least-shifted one(s), aligned (largest shift {calm[-1].shift_max} px)"
+                )
+            by_id = {a.bracket.id: a for a in calm}
+            ids = _crf_sample_ids([a.bracket for a in calm], o.crf_max_brackets)
+            chosen = [by_id[i] for i in sorted(ids)]
+            samples_imgs: list[list[np.ndarray]] = []
+            samples_times: list[list[float]] = []
+            for j, a in enumerate(chosen):
+                prog("Calibrating CRF", 0.8 * j / max(1, len(chosen)))
+                imgs = [load_rgb8(m.path) for m in a.members]
+                if apply:
+                    imgs = align_mod.apply_shifts(imgs, a.shifts)
+                samples_imgs.append([_subsample(im) for im in imgs])
+                samples_times.append([float(m.exposure_time) for m in a.members])
+                crf_brackets.append(a.bracket.id)
             crf = calibrate_crf(samples_imgs, samples_times, o.crf_samples, o.crf_lambda, o.crf_max_brackets)
+            crf.meta["bracket_ids"] = crf_brackets
+            crf.meta["frames"] = "aligned" if apply else "raw"
+            samples_imgs.clear()
         crf.save(crf_file)
     except Exception as e:
         warn(f"CRF: {e}")
         return report(**common)
-    samples_imgs.clear()
     prog("Calibrating CRF", 1.0)
 
     # ── 5 Merge ──
@@ -333,7 +433,10 @@ def run(
         prog("Merging", k / len(aligned), f"Merging bracket {k + 1}/{len(aligned)}")
         name = ds.position_name(len(positions))
         try:
-            imgs = align_mod.apply_shifts([load_rgb8(m.path) for m in a.members], a.shifts)
+            raw = [load_rgb8(m.path) for m in a.members]
+            saturated = saturated_count(raw[0])  # members are darkest first
+            imgs = align_mod.apply_shifts(raw, a.shifts)
+            del raw
             hdr = merge_bracket(imgs, [float(m.exposure_time) for m in a.members], crf, deghost=o.deghost)
             st = merge_stats(hdr)
             if st["nan"] or st["inf"]:
@@ -355,6 +458,8 @@ def run(
                 flagged=a.flagged,
                 shifts=a.shifts,
                 stats=st,
+                saturated=saturated,
+                align_status=a.status,
             )
         )
     prog("Merging", 1.0)
@@ -376,6 +481,21 @@ def run(
     prog("Proxies", 1.0)
 
     # ── 7 Dataset index ──
+    flagged = [p.name for p in positions if p.flagged]
+    p50 = [p.stats.get("p50", float("nan")) for p in positions]
+    stats = {
+        "ghost_score_max": float(max(p.ghost_score for p in positions)),
+        "shift_max": int(max(a.shift_max for a in aligned)),
+        "align_failed": int(sum(st == align_mod.STATUS_FAILED for a in aligned for st in a.status)),
+        "align_clipped": int(sum(st == align_mod.STATUS_CLIPPED for a in aligned for st in a.status)),
+        "frames_clipped_over_90": len(clipped_frames),
+        "saturated_total": int(sum(p.saturated or 0 for p in positions)),
+        "crf_brackets": crf_brackets,
+        "radiance_p50_median": float(np.nanmedian(p50)) if p50 else None,
+        "radiance_max": float(max(p.stats.get("max", 0.0) for p in positions)),
+        "crf_source": crf.source,
+    }
+
     prog("Writing dataset", 0.0)
     ds.write_index(
         out,
@@ -385,17 +505,15 @@ def run(
         proxy_operator=o.proxy_operator,
         proxy_ev=o.proxy_ev,
         source_dir=str(src.resolve()),
-        extra={"ghost_threshold": o.ghost_threshold, "deghost": o.deghost, "proxy_shared_scale": o.proxy_shared_scale},
+        extra={
+            "ghost_threshold": o.ghost_threshold,
+            "deghost": o.deghost,
+            "proxy_shared_scale": o.proxy_shared_scale,
+            "saturated_level": SATURATED_LEVEL,
+            "stats": dict(stats),
+        },
     )
     prog("Writing dataset", 1.0)
-    flagged = [p.name for p in positions if p.flagged]
-    p50 = [p.stats.get("p50", float("nan")) for p in positions]
-    stats = {
-        "ghost_score_max": float(max(p.ghost_score for p in positions)),
-        "radiance_p50_median": float(np.nanmedian(p50)) if p50 else None,
-        "radiance_max": float(max(p.stats.get("max", 0.0) for p in positions)),
-        "crf_source": crf.source,
-    }
 
     # ── 8 SfM ──
     registered, total = 0, len(positions)

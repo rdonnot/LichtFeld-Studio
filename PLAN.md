@@ -33,11 +33,24 @@ Plugin folder: `plugins/hdr_brackets/` (own uv env).
   (ghost score max 0.013), CRF calibrated (Debevec, numpy least squares — OpenCV's solver takes 16–70 s and
   under-samples; a test keeps the two within 0.01), merged, proxies, pycolmap registers **40/40** (9549 points);
   78 s in all → `data/smoke_hdr/{images_hdr,images,sparse/0,exposures.json,crf.json,brackets.json}`.
-- Accuracy on the synthetic truth (unit tests, 96×128 views): CRF max |Δg| 0.078 (6 brackets) / 0.111 (3) over
-  z ∈ [20, 235]; merged EXR vs truth after one global scale: median 2.0 %, p99 9.1 % relative error, no NaN;
-  −2 EV-only vs +2 EV-only merges agree to 0.2–0.6 % on mid-tones (monotonic with exposure).
-- Known weak spot: the MTB ghost score barely reacts to 3 px of drift (≈ 4 %) and flags only large moving objects;
-  fine for tripod brackets, revisit with a real handheld capture. pycolmap 4 writes `rigs.bin`/`frames.bin` beside
+- Accuracy on the synthetic truth, measured on `data/smoke_hdr` itself (`tools/eval/check_smoke_hdr.py`): CRF max |Δg|
+  **0.143 nats** over z ∈ [20, 235] (no monotonic fix needed); merged EXR vs truth after one global log-scale over
+  unclipped pixels: **median 3.9 %, p99 13.3 %** relative error (worst position 4.1 % / 15.7 %), no NaN; shifts 0 px on
+  all 200 frames (tripod set). The first committed run had been 0.395 nats / 9.9 % / 41 % — the hdr-architect review
+  found MTB alignment returning its search limit (±31 px) on clipped +2/+4 EV frames and the CRF calibrated on those
+  shifted frames. Fixed: the reference is the best-exposed frame, frames with grey median ≥ 250 or ≤ 5 are never
+  searched (they take a neighbour's shift), a shift at the search limit is a failed search → (0,0) + warning, and the
+  CRF is calibrated on RAW frames of brackets whose shifts are ≤ 2 px. λ = 100 (0.143 vs 0.161 at 30 on the room).
+  On 96×128 unit sets: CRF 0.08–0.13 nats, merge 2 % / 9 %; −2 EV-only vs +2 EV-only merges agree to 0.2–0.6 %.
+- `exposures.json` is **v2**: per source `exif_ev` (absolute, LichtFeld's log2(t·ISO/N²)), `ev_step` (relative to the
+  bracket's median exposure time), `align` status and shift; per position `saturated` (pixels ≥ 250 in the shortest
+  exposure — the merged value there is a LOWER bound, 82 k pixels on the room, the lamp); warnings when ISO or
+  f-number vary, when a frame is > 90 % clipped (the +4 EV frame: 92.7 %), when a search fails. Radiance units: 1.0 =
+  a pixel reading 128 after 1 s at the shoot's ISO and f-number; the room's median ≈ 120, P99 ≈ 1860, max ≈ 20 400;
+  one global factor (≈ 272 here) from the truth.
+- Known weak spots: the MTB ghost score barely reacts to 3 px of drift (≈ 4 %) and flags only large moving objects;
+  the deghost reference in `merge.py` is still the middle exposure (clipped on bright views → deghosting off there);
+  fine for tripod brackets, revisit both with a real handheld capture. pycolmap 4 writes `rigs.bin`/`frames.bin` beside
   the usual three files — LichtFeld 0.5.4.2 loads such a `sparse/0` (it is what N'Brain's Reconstruct produces).
 - Not yet done: the panel has not been exercised in the GUI (headless build on this machine; needs Xvfb or the
   MCP bridge), the >150-image sequential-matcher branch is untested, "Cancel" only disables the button.

@@ -15,7 +15,15 @@ rows w(z_ij)·(g(z_ij) − x_i − ln t_j), the smoothness rows λ·w(z)·g''(z)
     70 s for 420 on this machine (2026-10-27, under build load) — so it is the cross-check, not the default.
 Why the defaults differ from OpenCV's (70 samples, λ = 10): on the synthetic camera (shot + read noise, JPEG q95), 70
 samples leave max |Δg| ≈ 0.15–0.25 over z ∈ [20, 235] against the truth (noise, not the solver: noise-free frames give
-0.015); 1000 samples per bracket and λ = 30 reach 0.11 from 3 brackets and 0.078 from 6 (tests/test_response.py).
+0.015); 1000 samples per bracket fix that. λ = 100 rather than 30: on the 5-EV synthetic room (12 brackets of raw,
+unshifted frames, tools/eval/check_smoke_hdr.py, 2026-10-28) λ = 100 gives 0.143 against 0.161 and a merged-EXR
+median / p99 relative error of 3.9 % / 13.3 % against 4.5 % / 14.4 % (the hdr-architect review measured 0.134 / 0.078
+against 0.158 / 0.100 on the room). On the small ±2 EV test frames (96×128) the stiffer curve costs a little: 0.130
+from 3 brackets and 0.093 from 6, against 0.111 / 0.078 at λ = 30 (tests/test_response.py).
+
+Feed it frames that are where the camera put them: a calibration bracket shifted by a failed MTB search (align.py)
+pairs pixels of different scene points, and one such bracket bends the whole curve (0.395 on the room, review of
+2026-10-27). The pipeline calibrates on RAW frames of brackets whose shifts are all ≤ 2 px.
 
 Scale: g is known only up to an additive constant (the absolute radiance scale is not observable from LDR frames).
 Debevec's own anchor is kept — g(128) = 0 — so a merged EXR is in units where a pixel that reads 128 after a 1 s
@@ -216,7 +224,7 @@ def calibrate_crf(
     brackets_images: list[list[np.ndarray]],
     times: list[list[float]],
     samples: int = 1000,
-    lam: float = 30.0,
+    lam: float = 100.0,
     max_brackets: int = 12,
     method: str = "numpy",
 ) -> CRF:

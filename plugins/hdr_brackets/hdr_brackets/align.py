@@ -14,13 +14,27 @@ deghosting weights then matter). Measured on the synthetic tripod brackets at ±
 alignment; an object changing 1/16 of the frame 6.4 % (not flagged), a quarter of it > 20 % (flagged); 3 px of
 uncorrected drift on these smooth frames only ≈ 4 % (a median bitmap of a smooth frame has one contour) — on a
 textured real frame the same drift flips far more.
+
+Clipped frames (review of 2026-10-27, measured on the 5-EV synthetic room): a frame whose grey median is ≥ 250 or ≤ 5
+has a degenerate median bitmap — the exclusion band around the median swallows almost every pixel, so
+`calculateShift` matches noise and wanders to its limit (2^bits − 1 px: (−31, −31) on 24/40 EV+4 frames of a
+motionless tripod set). So:
+  - the reference is the frame with the most grey pixels in [CLIP_LO, CLIP_HI] (not the middle exposure, which on a
+    bright view is itself clipped — its median read 252 on pos_009);
+  - a frame whose median is outside (CLIP_LO, CLIP_HI) is never searched: it takes the shift of its nearest measured
+    neighbour in exposure order (Ward's adjacent-exposure idea — frames shot one after another moved together; on a
+    tripod that is (0, 0)); status "clipped";
+  - a search that ends with |dx| or |dy| ≥ 2^bits − 1 hit the pyramid's limit: that is a failed search, not a
+    measurement — the frame keeps (0, 0), status "failed", and the caller reports it.
+`AlignResult.status[i]` says which of "reference" / "mtb" / "clipped" / "failed" frame i is. The ghost score is taken
+over the searched frames only (a clipped frame's bitmap carries no information).
 """
 
 from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import cv2
 import numpy as np
@@ -31,16 +45,42 @@ log = logging.getLogger(__name__)
 FLAG_THRESHOLD = 0.08
 #: MTB's exclusion half-width around the median, in 8-bit levels (OpenCV's default).
 EXCLUDE_RANGE = 4
+#: Grey levels a frame must keep its median strictly between to be searched (and the in-range window of the reference).
+CLIP_LO = 5
+CLIP_HI = 250
+
+STATUS_REFERENCE = "reference"
+STATUS_MTB = "mtb"
+STATUS_CLIPPED = "clipped"
+STATUS_FAILED = "failed"
 
 
 @dataclass
 class AlignResult:
-    """`images` aligned to `images[reference]`; `shifts[i]` = (dx, dy) applied to frame i (pixels)."""
+    """`images` aligned to `images[reference]`; `shifts[i]` = (dx, dy) applied to frame i (pixels); `status[i]` how
+    that shift was obtained (module docstring); `medians[i]` / `in_range[i]` the grey median and the share of grey
+    pixels in [CLIP_LO, CLIP_HI]; `max_bits` the pyramid depth used (a search limit of 2^max_bits − 1 px)."""
 
     images: list[np.ndarray]
     score: float
     shifts: list[tuple[int, int]]
     reference: int
+    status: list[str] = field(default_factory=list)
+    medians: list[float] = field(default_factory=list)
+    in_range: list[float] = field(default_factory=list)
+    max_bits: int = 0
+
+    @property
+    def failed(self) -> list[int]:
+        return [i for i, st in enumerate(self.status) if st == STATUS_FAILED]
+
+    @property
+    def clipped(self) -> list[int]:
+        return [i for i, st in enumerate(self.status) if st == STATUS_CLIPPED]
+
+    @property
+    def shift_max(self) -> int:
+        return max((max(abs(int(dx)), abs(int(dy))) for dx, dy in self.shifts), default=0)
 
 
 def mtb_max_bits(height: int, width: int) -> int:
@@ -91,11 +131,35 @@ def bitmap_difference(
     return float(diff.sum()) / n
 
 
+def _calculate_shift(mtb: cv2.AlignMTB, gray_ref: np.ndarray, gray: np.ndarray) -> tuple[int, int]:
+    """One MTB search (a seam for tests)."""
+    sx, sy = mtb.calculateShift(gray_ref, gray)
+    return int(sx), int(sy)
+
+
+def searchable(gray: np.ndarray, lo: int = CLIP_LO, hi: int = CLIP_HI) -> bool:
+    """True when the frame's median bitmap means something: grey median strictly inside (lo, hi)."""
+    m = float(np.median(gray))
+    return lo < m < hi
+
+
+def search_failed(shift: tuple[int, int], max_bits: int) -> bool:
+    """A search that reached the pyramid's limit (2^bits − 1 px on either axis) found nothing."""
+    limit = (1 << int(max_bits)) - 1
+    return max(abs(int(shift[0])), abs(int(shift[1]))) >= limit
+
+
+def best_exposed(grays: list[np.ndarray], lo: int = CLIP_LO, hi: int = CLIP_HI) -> int:
+    """Index of the frame with the most grey pixels in [lo, hi] (the first on a tie)."""
+    return int(np.argmax([float(((g >= lo) & (g <= hi)).mean()) for g in grays]))
+
+
 def align_bracket_detailed(
     images_uint8: list[np.ndarray], reference: int | None = None, max_bits: int | None = None
 ) -> AlignResult:
-    """MTB alignment of every frame onto the reference (default: the middle one — pass the frames darkest first,
-    so the middle is the mid exposure), the shifts and the ghost score. Frames must share one size."""
+    """MTB alignment of every frame onto the reference (default: the best-exposed frame, see `best_exposed`; pass
+    the frames darkest first — the clipped frames inherit their neighbours' shifts in that order), the shifts, how
+    each was obtained, and the ghost score. Frames must share one size. See the module docstring."""
     imgs = [np.asarray(im) for im in images_uint8]
     if not imgs:
         raise ValueError("align_bracket: no images")
@@ -104,33 +168,61 @@ def align_bracket_detailed(
         raise ValueError(f"align_bracket: frames differ in size: {[im.shape for im in imgs]}")
     if any(im.dtype != np.uint8 for im in imgs):
         raise ValueError("align_bracket wants uint8 frames")
-    ref = len(imgs) // 2 if reference is None else int(reference)
     h, w = shape[:2]
     bits = mtb_max_bits(h, w) if max_bits is None else int(max_bits)
     mtb = cv2.createAlignMTB(bits, EXCLUDE_RANGE, True)
     grays = [to_gray(im) for im in imgs]
+    ref = best_exposed(grays) if reference is None else int(reference)
+    if not 0 <= ref < len(imgs):
+        raise ValueError(f"align_bracket: reference {ref} out of range")
+    n = len(imgs)
+    shifts: list[tuple[int, int]] = [(0, 0)] * n
+    status: list[str] = [STATUS_CLIPPED] * n
+    status[ref] = STATUS_REFERENCE
+    for i, g in enumerate(grays):
+        if i == ref or not searchable(g):
+            continue
+        sh = _calculate_shift(mtb, grays[ref], g)
+        if search_failed(sh, bits):
+            log.info(
+                "MTB search on frame %d reached its ±%d px limit (%s): failed, kept at (0, 0)", i, (1 << bits) - 1, sh
+            )
+            status[i] = STATUS_FAILED
+        else:
+            shifts[i] = sh
+            status[i] = STATUS_MTB
+    measured = [i for i, st in enumerate(status) if st in (STATUS_REFERENCE, STATUS_MTB)]
+    for i in range(n):
+        if status[i] == STATUS_CLIPPED:
+            # nearest measured frame in exposure order; on a tie the one toward the reference
+            j = min(measured, key=lambda k: (abs(k - i), abs(k - ref)))
+            shifts[i] = shifts[j]
     out: list[np.ndarray] = []
-    shifts: list[tuple[int, int]] = []
     score = 0.0
     for i, (im, g) in enumerate(zip(imgs, grays, strict=True)):
-        if i == ref:
-            out.append(im)
-            shifts.append((0, 0))
-            continue
-        sx, sy = (int(v) for v in mtb.calculateShift(grays[ref], g))
-        if (sx, sy) == (0, 0):
+        sh = shifts[i]
+        if sh == (0, 0):
             aligned, g_al = im, g
         else:
-            aligned = mtb.shiftMat(np.ascontiguousarray(im), (sx, sy))
-            g_al = mtb.shiftMat(g, (sx, sy))
+            aligned = mtb.shiftMat(np.ascontiguousarray(im), sh)
+            g_al = mtb.shiftMat(g, sh)
         out.append(aligned)
-        shifts.append((sx, sy))
-        score = max(score, bitmap_difference(grays[ref], g_al, _filled_mask((h, w), (sx, sy))))
-    return AlignResult(images=out, score=score, shifts=shifts, reference=ref)
+        if status[i] in (STATUS_MTB, STATUS_FAILED):
+            score = max(score, bitmap_difference(grays[ref], g_al, _filled_mask((h, w), sh)))
+    return AlignResult(
+        images=out,
+        score=score,
+        shifts=shifts,
+        reference=ref,
+        status=status,
+        medians=[float(np.median(g)) for g in grays],
+        in_range=[float(((g >= CLIP_LO) & (g <= CLIP_HI)).mean()) for g in grays],
+        max_bits=bits,
+    )
 
 
 def align_bracket(images_uint8: list[np.ndarray]) -> tuple[list[np.ndarray], float]:
-    """Aligned frames (onto the middle one) and the ghost score (see FLAG_THRESHOLD)."""
+    """Aligned frames (onto the best-exposed one) and the ghost score (see FLAG_THRESHOLD)."""
     r = align_bracket_detailed(images_uint8)
     return r.images, r.score
 

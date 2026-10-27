@@ -3,14 +3,23 @@
     <out>/images_hdr/pos_NNN.exr   linear radiance, float32 RGB, ZIP (tools/eval's write_exr)
     <out>/images/pos_NNN.png       the 8-bit sRGB proxy (what SfM registers; same stem as the EXR)
     <out>/crf.json                 the CRF, in tools/synth's crf.json form
-    <out>/exposures.json           {"crf": "crf.json", "proxy_operator", "positions": [{name, hdr, proxy,
-                                   proxy_scale, bracket_id, ghost_score, flagged, sources: [{file, exposure_time,
-                                   ev, iso, fnumber, timestamp, shift}]}], …}
+    <out>/exposures.json           {"version": 2, "crf": "crf.json", "proxy_operator", "positions": [{name, hdr,
+                                   proxy, proxy_scale, bracket_id, ghost_score, flagged, saturated, stats,
+                                   sources: [{file, exposure_time, exif_ev, ev_step, iso, fnumber, timestamp,
+                                   shift, align}]}], "stats": {…}, …}
     <out>/sparse/0/                COLMAP binary model (sfm.py), images named pos_NNN.png
 
 `source_dir` + each source's `file` locate the raw JPEG; its `shift` = the (dx, dy) pixels MTB moved it onto the
-bracket's reference, so M3 can train every raw frame with the bracket's pose. `proxy_scale` maps proxy pixels back to
-EXR radiance (proxy ≈ OETF(op(EXR × proxy_scale))).
+bracket's reference, so M3 can train every raw frame with the bracket's pose, and `align` how that shift was
+obtained ("reference", "mtb" = searched, "clipped" = too clipped to search, took its neighbour's, "failed" = the
+search hit its limit, kept (0, 0); align.py). `proxy_scale` maps proxy pixels back to EXR radiance
+(proxy ≈ OETF(op(EXR × proxy_scale))).
+
+EV words mean what they mean in the synthetic truth (`exposures_gt.json`): `exif_ev` = the absolute EXIF value,
+LichtFeld's log2(t / N² · ISO) (exif.py); `ev_step` = the frame's step inside its bracket, log2(t / t_median) with
+t_median the bracket's median exposure time (0 for the middle frame of an odd bracket). Version 1 wrote the absolute
+value as `ev`. `saturated` = pixels with a channel ≥ `saturated_level` (250) in the bracket's SHORTEST exposure: the
+merged radiance there is only a lower bound.
 """
 
 from __future__ import annotations
@@ -36,7 +45,7 @@ HDR_DIR = "images_hdr"
 PROXY_DIR = "images"
 CRF_FILE = "crf.json"
 INDEX_FILE = "exposures.json"
-INDEX_VERSION = 1
+INDEX_VERSION = 2
 
 
 def position_name(index: int) -> str:
@@ -57,6 +66,8 @@ class PositionResult:
     flagged: bool = False
     shifts: list[tuple[int, int]] = field(default_factory=list)
     stats: dict[str, Any] = field(default_factory=dict)
+    saturated: int | None = None
+    align_status: list[str] = field(default_factory=list)
 
     @property
     def hdr_rel(self) -> str:
@@ -92,16 +103,31 @@ def read_proxy(path: str | os.PathLike) -> np.ndarray:
         return np.asarray(im.convert("RGB"))
 
 
-def _source_entry(info: ExposureInfo, shift: tuple[int, int] | None) -> dict[str, Any]:
-    return {
+def median_log2_time(infos: Sequence[ExposureInfo]) -> float | None:
+    """log2 of the bracket's median exposure time (the median of log2 t: for an even count, the geometric middle)."""
+    ts = [i.exposure_time for i in infos if i.exposure_time]
+    return float(np.median(np.log2(ts))) if ts else None
+
+
+def _source_entry(
+    info: ExposureInfo, shift: tuple[int, int] | None, mid_log2_t: float | None, align: str | None = None
+) -> dict[str, Any]:
+    step = None
+    if info.exposure_time and mid_log2_t is not None:
+        step = float(np.log2(info.exposure_time) - mid_log2_t)
+    d: dict[str, Any] = {
         "file": info.name,
         "exposure_time": info.exposure_time,
-        "ev": info.ev,
+        "exif_ev": info.ev,
+        "ev_step": step,
         "iso": info.iso,
         "fnumber": info.fnumber,
         "timestamp": format_timestamp(info.timestamp),
         "shift": [int(shift[0]), int(shift[1])] if shift is not None else [0, 0],
     }
+    if align is not None:
+        d["align"] = align
+    return d
 
 
 def _lookup(source_infos: Mapping[str, ExposureInfo] | Sequence[ExposureInfo] | None) -> dict[str, ExposureInfo]:
@@ -126,23 +152,31 @@ def index_dict(
     lookup = _lookup(source_infos)
     entries = []
     for pos in positions:
+        infos = [lookup.get(info.name, info) for info in pos.sources]
+        mid = median_log2_time(infos)
         srcs = []
-        for k, info in enumerate(pos.sources):
-            info = lookup.get(info.name, info)
-            srcs.append(_source_entry(info, pos.shifts[k] if k < len(pos.shifts) else None))
-        entries.append(
-            {
-                "name": pos.name,
-                "hdr": pos.hdr_rel,
-                "proxy": pos.proxy_rel,
-                "proxy_scale": float(pos.proxy_scale),
-                "bracket_id": int(pos.bracket_id),
-                "ghost_score": float(pos.ghost_score),
-                "flagged": bool(pos.flagged),
-                "stats": pos.stats,
-                "sources": srcs,
-            }
-        )
+        for k, info in enumerate(infos):
+            srcs.append(
+                _source_entry(
+                    info,
+                    pos.shifts[k] if k < len(pos.shifts) else None,
+                    mid,
+                    pos.align_status[k] if k < len(pos.align_status) else None,
+                )
+            )
+        entry: dict[str, Any] = {
+            "name": pos.name,
+            "hdr": pos.hdr_rel,
+            "proxy": pos.proxy_rel,
+            "proxy_scale": float(pos.proxy_scale),
+            "bracket_id": int(pos.bracket_id),
+            "ghost_score": float(pos.ghost_score),
+            "flagged": bool(pos.flagged),
+        }
+        if pos.saturated is not None:
+            entry["saturated"] = int(pos.saturated)
+        entry.update(stats=pos.stats, sources=srcs)
+        entries.append(entry)
     d: dict[str, Any] = {
         "version": INDEX_VERSION,
         "crf": CRF_FILE,

@@ -52,6 +52,7 @@ class BracketSet:
     raw_dir: Path
     meta: dict
     crf_truth: dict
+    bright_view: int = -1
 
     def images(self) -> list[dict]:
         return self.meta["images"]
@@ -69,9 +70,10 @@ def make_set(
     h: int = 64,
     w: int = 96,
     seed: int = 11,
-    evs: tuple[float, ...] = (-2.0, 0.0, 2.0),
+    evs: tuple[float, ...] | None = (-2.0, 0.0, 2.0),
     radiance=None,
 ) -> BracketSet:
+    """`evs=None` leaves make_brackets' own default (−4, −2, 0, +2, +4: what data/brackets_raw was shot with)."""
     gt = root / "gt"
     gt.mkdir(parents=True, exist_ok=True)
     for i in range(n_views):
@@ -79,7 +81,10 @@ def make_set(
         write_exr(str(gt / f"view_{i:03d}.exr"), lin)
     raw = root / "raw"
     logging.getLogger("conftest").info("make_brackets %s → %s", gt, raw)
-    assert mb.main(["--gt", str(gt), "--out", str(raw), "--seed", str(seed), "--evs", *[str(e) for e in evs]]) == 0
+    args = ["--gt", str(gt), "--out", str(raw), "--seed", str(seed)]
+    if evs is not None:
+        args += ["--evs", *[str(e) for e in evs]]
+    assert mb.main(args) == 0
     meta = json.loads((raw / "exposures_gt.json").read_text())
     crf = json.loads((raw / "crf.json").read_text())
     return BracketSet(gt, raw, meta, crf)
@@ -95,3 +100,19 @@ def set3(tmp_path_factory) -> BracketSet:
 def set6(tmp_path_factory) -> BracketSet:
     """6 views, 96×128 — CRF recovery and merge accuracy."""
     return make_set(tmp_path_factory.mktemp("set6"), n_views=6, h=96, w=128, seed=23)
+
+
+@pytest.fixture(scope="session")
+def set5ev(tmp_path_factory) -> BracketSet:
+    """4 views, 96×128, at the camera's DEFAULT −4…+4 EV (the ±2 EV sets never clip a mid frame, which is how the
+    (−31, −31) shifts of the 5-EV room went unnoticed): the +4 EV frames are mostly clipped, and view 3 is 2^4.5
+    brighter than the others (the gain is set from view 0), so its 0 EV frame — the middle one — is clipped too."""
+    bright = 3
+
+    def radiance(i: int) -> np.ndarray:
+        lin = procedural_radiance(96, 128, 4100 + i)
+        return lin * np.float32(2.0**4.5) if i == bright else lin
+
+    bs = make_set(tmp_path_factory.mktemp("set5ev"), n_views=4, h=96, w=128, seed=41, evs=None, radiance=radiance)
+    bs.bright_view = bright
+    return bs

@@ -17,9 +17,45 @@ images are linear HDR:
   images_hdr/*.exr    linear radiance, one per bracket (or singleton)
   images/*.png        tonemapped LDR proxies (what COLMAP sees)
   sparse/             COLMAP model (only when "Run SfM" is on)
-  exposures.json      per image/bracket: files, exposure, grouping
+  exposures.json      per position and source image: files, exposure, alignment (schema below)
   crf.json            the recovered (or supplied) camera response
+  brackets.json       the grouping, every image (also the skipped ones)
 ```
+
+### `exposures.json` (version 2)
+
+```
+{"version": 2, "crf": "crf.json", "proxy_operator": "aces", "proxy_ev": 0.0, "units": …, "source_dir": …,
+ "ghost_threshold": 0.08, "deghost": true, "proxy_shared_scale": true, "saturated_level": 250,
+ "stats": {"shift_max", "align_failed", "align_clipped", "frames_clipped_over_90", "saturated_total",
+           "crf_brackets", "ghost_score_max", …},
+ "positions": [{"name": "pos_000", "hdr": "images_hdr/pos_000.exr", "proxy": "images/pos_000.png",
+                "proxy_scale", "bracket_id", "ghost_score", "flagged", "saturated", "stats": {min, p1, p50, …},
+                "sources": [{"file", "exposure_time", "exif_ev", "ev_step", "iso", "fnumber", "timestamp",
+                             "shift": [dx, dy], "align"}]}]}
+```
+
+- `exif_ev` — the absolute EXIF exposure value, LichtFeld's `log2(t / N² · ISO)` (what PPISP seeds from).
+- `ev_step` — the frame's step inside its bracket, `log2(t / t_median)` (0 for the middle frame of an odd bracket).
+  The same words as the synthetic truth `exposures_gt.json` (`exif_ev` absolute, `ev` the step). Version 1 wrote
+  the absolute value as `ev`.
+- `shift` — the pixels MTB moved the raw frame onto the bracket's reference; `align` how it was obtained:
+  `reference`, `mtb` (searched), `clipped` (grey median ≥ 250 or ≤ 5: not searchable, took its nearest searched
+  neighbour's shift), `failed` (the search reached its ±(2^bits − 1) px limit: kept at (0, 0), and warned).
+- `saturated` — pixels with a channel ≥ 250 in the bracket's SHORTEST exposure: there the merged radiance is only a
+  lower bound.
+
+The report also warns when ISO or the f-number change inside a bracket or across the shoot (the merge weighs frames
+by exposure time only), and names frames more than 90 % clipped.
+
+## Checking against the synthetic truth
+
+```bash
+cd tools && uv run python eval/check_smoke_hdr.py ../data/smoke_hdr ../data/brackets_raw ../data/brackets_synth/gt
+```
+
+CRF vs the camera's truth, merged EXR vs the truth EXR (one global scale per position, over the 0 EV frame's
+unclipped pixels), the shifts; PASS when CRF < 0.2 nats, median < 5 %, p99 < 15 % and no shift beyond 2 px.
 
 "Load dataset" calls `lf.scene.load_file(<out>, is_dataset=True, output_path=<out>/train)`.
 

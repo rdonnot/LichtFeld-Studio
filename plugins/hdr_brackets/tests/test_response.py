@@ -1,9 +1,10 @@
 """CRF recovery against the synthetic camera's truth (crf.json), the file form, and the two engines' agreement.
 
 Numbers reached on set6 (6 views 96×128, ±2 EV, seed 23; max |Δg| over z ∈ [20, 235] after matching at z = 128,
-natural log): 3 brackets 0.111, 6 brackets 0.078 with the defaults (1000 samples per bracket, λ = 30). OpenCV's own
-defaults (70 samples, λ = 10) reach only 0.15–0.25 on these frames: the synthetic noise (shot + read + JPEG), not the
-solver — noise-free frames give 0.015 with 70 samples.
+natural log): 3 brackets 0.130, 6 brackets 0.093 with the defaults (1000 samples per bracket, λ = 100; λ = 30 gave
+0.111 / 0.078 here but is worse on the 5-EV room, response.py). OpenCV's own defaults (70 samples, λ = 10) reach only
+0.15–0.25 on these frames: the synthetic noise (shot + read + JPEG), not the solver — noise-free frames give 0.015
+with 70 samples.
 """
 
 from __future__ import annotations

@@ -3,6 +3,7 @@ name = "hdr_brackets"
 version = "0.1.0"
 description = "Align, calibrate and merge exposure brackets to linear EXR for HDR splat training"
 requires-python = ">=3.11"
+license = "GPL-3.0-only"
 dependencies = [
     "numpy>=2.0",
     "opencv-python-headless>=4.10",

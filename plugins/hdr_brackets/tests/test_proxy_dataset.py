@@ -107,6 +107,29 @@ def test_write_dataset_layout_and_schema(tmp_path: Path) -> None:
     assert p1["hdr"] == "images_hdr/pos_001.exr" and p1["proxy"] == "images/pos_001.png"
     assert p1["bracket_id"] == 11 and p1["flagged"] is True and p1["ghost_score"] == pytest.approx(0.01)
     s = p1["sources"][2]
-    assert set(s) >= {"file", "exposure_time", "ev", "iso", "fnumber", "timestamp"}
+    assert set(s) >= {"file", "exposure_time", "exif_ev", "ev_step", "iso", "fnumber", "timestamp", "shift"}
+    assert "ev" not in s  # v1's ambiguous key: the truth file uses `ev` for the step, `exif_ev` for the absolute
     assert s["file"] == "IMG_0006.jpg" and s["exposure_time"] == pytest.approx(0.04) and s["shift"] == [1, -2]
     assert s["timestamp"] == "2026:10:27 10:00:00"
+    assert idx["version"] == 2
+    # exif_ev = log2(t / N² · ISO) (absolute), ev_step = log2(t / the bracket's median t) (−2, 0, +2 here)
+    assert s["exif_ev"] == pytest.approx(np.log2(0.04 / 16 * 100))
+    assert [x["ev_step"] for x in p1["sources"]] == pytest.approx([-2.0, 0.0, 2.0])
+    assert "saturated" not in p1  # only written when the pipeline counted it
+
+
+def test_ev_step_of_an_even_bracket(tmp_path: Path) -> None:
+    """Two frames: the median exposure time is their geometric middle, so the steps are symmetric."""
+    crf = CRF(np.tile(np.log(np.linspace(1e-3, 1, 256)), (3, 1)), "test").anchored()
+    pos = PositionResult(
+        name="pos_000",
+        bracket_id=0,
+        sources=[_info("IMG_0001.jpg", 0.01), _info("IMG_0002.jpg", 0.04)],
+        shifts=[(0, 0), (0, 0)],
+        saturated=12,
+        align_status=["reference", "mtb"],
+    )
+    write_dataset(tmp_path, [pos], crf)
+    p0 = json.loads((tmp_path / "exposures.json").read_text())["positions"][0]
+    assert [x["ev_step"] for x in p0["sources"]] == pytest.approx([-1.0, 1.0])
+    assert p0["saturated"] == 12 and [x["align"] for x in p0["sources"]] == ["reference", "mtb"]
