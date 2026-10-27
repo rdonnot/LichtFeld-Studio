@@ -46,12 +46,12 @@ def test_brackets_end_to_end(tmp_path: Path) -> None:
     assert mb.main(["--gt", str(gt), "--out", str(out), "--seed", "5"]) == 0
 
     meta = json.loads((out / "exposures_gt.json").read_text())
-    assert len(meta["images"]) == 6
-    assert [r["ev"] for r in meta["images"][:3]] == [-2.0, 0.0, 2.0]
+    assert len(meta["images"]) == 10
+    assert [r["ev"] for r in meta["images"][:5]] == [-4.0, -2.0, 0.0, 2.0, 4.0]
     t = [r["exposure_time"] for r in meta["images"][:3]]
     assert t[1] / t[0] == pytest.approx(4.0) and t[2] / t[1] == pytest.approx(4.0)
     stamps = [r["timestamp"] for r in meta["images"]]
-    assert stamps[0] < stamps[1] < stamps[2] < stamps[3]
+    assert stamps == sorted(stamps) and len(set(stamps)) == len(stamps)
 
     # EXIF as the plugin (and LichtFeld's exif.cpp) will read it.
     for r in meta["images"]:
@@ -66,7 +66,7 @@ def test_brackets_end_to_end(tmp_path: Path) -> None:
     from hdr_metrics import read_exr
 
     radiance = read_exr(str(gt / "view_000.exr"))
-    for r in meta["images"][:3]:
+    for r in meta["images"][:5]:
         pred = apply_crf(radiance * r["exposure_time"] * meta["gain"], crf).astype(int)
         with Image.open(out / r["file"]) as im:
             photo = np.asarray(im.convert("RGB")).astype(int)

@@ -137,7 +137,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--gt", type=Path, required=True, help="folder with view_NNN.exr from make_scene.py")
     ap.add_argument("--out", type=Path, required=True, help="output folder (data/brackets_raw)")
-    ap.add_argument("--evs", type=float, nargs="+", default=[-2.0, 0.0, 2.0])
+    ap.add_argument("--evs", type=float, nargs="+", default=[-4.0, -2.0, 0.0, 2.0, 4.0])
     ap.add_argument("--base-time", type=float, default=0.01, help="exposure time at EV 0, seconds")
     ap.add_argument("--iso", type=int, default=100)
     ap.add_argument("--fnumber", type=float, default=4.0)
