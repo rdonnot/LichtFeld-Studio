@@ -988,7 +988,8 @@ namespace lfs::io {
             if (invalid_camera_ids.contains(image.camera_id)) {
                 continue;
             }
-            const fs::path image_rel_path = lfs::core::utf8_to_path(image.name).lexically_normal();
+            const fs::path image_rel_path =
+                resolve_image_extension(images_path, lfs::core::utf8_to_path(image.name).lexically_normal());
             const std::string basename_key = detail::normalize_lookup_key(image_rel_path.filename());
 
             if (image_rel_path.parent_path().empty()) {
@@ -2977,7 +2978,8 @@ namespace lfs::io {
                     return;
                 }
 
-                const std::filesystem::path image_rel_path = lfs::core::utf8_to_path(img.name);
+                const std::filesystem::path image_rel_path =
+                    resolve_image_extension(images_path, lfs::core::utf8_to_path(img.name));
                 std::filesystem::path image_path = images_path / image_rel_path;
 
                 if (!safe_exists(image_path)) {

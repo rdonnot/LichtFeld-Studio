@@ -357,6 +357,23 @@ namespace lfs::io {
         return std::find(image_extensions.begin(), image_extensions.end(), ext) != image_extensions.end();
     }
 
+    // The sparse model names the file COLMAP registered (an 8-bit proxy, `pos_000.png`); an alternate
+    // images folder (`--images images_hdr`) may hold the same frame as another format (`pos_000.exr`).
+    // Returns the relative path with the extension of the file that exists, or `relative` unchanged.
+    inline std::filesystem::path resolve_image_extension(const std::filesystem::path& images_path,
+                                                         const std::filesystem::path& relative) {
+        if (relative.empty() || safe_exists(images_path / relative))
+            return relative;
+        static const char* const alternates[] = {".exr", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"};
+        for (const char* ext : alternates) {
+            std::filesystem::path candidate = relative;
+            candidate.replace_extension(ext);
+            if (candidate != relative && safe_exists(images_path / candidate))
+                return candidate;
+        }
+        return relative;
+    }
+
     inline std::string strip_extension(const std::string& filename) {
         auto last_dot = filename.find_last_of('.');
         if (last_dot == std::string::npos) {
