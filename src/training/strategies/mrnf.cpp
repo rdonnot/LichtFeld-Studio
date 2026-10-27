@@ -2537,9 +2537,19 @@ namespace lfs::training {
         std::vector<float> sh0(count * 3);
         std::vector<float> scales(count * 3);
         std::vector<float> rotations(count * 4, 0.0f);
+        // HDR: the seeds were sampled from the mu-law target; invert it to radiance and store log radiance.
+        const bool hdr = _params->hdr;
+        const float hdr_mu = _params->hdr_mu;
+        const float hdr_scale = _params->hdr_scale > 0.0f ? _params->hdr_scale : 1.0f;
         for (size_t i = 0; i < count; ++i) {
             for (int c = 0; c < 3; ++c) {
-                sh0[i * 3 + c] = (seeds.colors[i * 3 + c] - 0.5f) / MRNF_SH_C0;
+                const float colour = seeds.colors[i * 3 + c];
+                if (hdr) {
+                    const float radiance = std::expm1(colour * std::log1p(hdr_mu)) / hdr_mu * hdr_scale;
+                    sh0[i * 3 + c] = (std::log(std::max(radiance, 1e-3f)) - 0.5f) / MRNF_SH_C0;
+                } else {
+                    sh0[i * 3 + c] = (colour - 0.5f) / MRNF_SH_C0;
+                }
                 scales[i * 3 + c] = seeds.log_scales[i];
             }
             rotations[i * 4] = 1.0f;

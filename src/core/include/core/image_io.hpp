@@ -59,6 +59,8 @@ namespace lfs::core {
     // Native resolution and native channel count (1-4). Integer formats normalized
     // to [0,1], float formats passed through. No gamma conversion. nullptr on failure.
     LFS_CORE_API std::tuple<float*, int, int, int> load_image_float(const std::filesystem::path& p);
+    // Linear float [3, H, W] (CPU or CUDA, any contiguity) -> scanline EXR, R/G/B FLOAT, ZIP. HDR eval renders.
+    LFS_CORE_API bool save_image_exr(const std::filesystem::path& path, const Tensor& image_chw);
     LFS_CORE_API void resample_bilinear_f32(const float* src, int sw, int sh, int channels,
                                             float* dst, int dw, int dh);
     // bit_depth 8 or 16; data is native-endian u8/u16 interleaved.
