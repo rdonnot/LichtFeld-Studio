@@ -99,3 +99,4 @@ src/rendering/rasterizer/vulkan/shader/radix_sort/*.spv
 !/tools/eval/**
 !/tools/synth/**
 /plugins/*/.venv/
+!/plugins/**

@@ -1,0 +1,22 @@
+[project]
+name = "hdr_brackets"
+version = "0.1.0"
+description = "Align, calibrate and merge exposure brackets to linear EXR for HDR splat training"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.0",
+    "opencv-python-headless>=4.10",
+    "openexr>=3.3",
+    "pillow>=10.0",
+    "pycolmap>=3.11",
+    "pytest>=8.0",
+]
+
+[tool.lichtfeld]
+hot_reload = true
+plugin_api = ">=1,<2"
+lichtfeld_version = ">=0.5.4"
+required_features = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
