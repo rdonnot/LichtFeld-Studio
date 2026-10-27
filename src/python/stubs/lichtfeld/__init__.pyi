@@ -2304,6 +2304,36 @@ class OptimizationParams:
     def gut(self, arg: bool, /) -> None: ...
 
     @property
+    def hdr(self) -> bool:
+        """HDR training: linear EXR input, log-radiance SH, mu-law loss"""
+
+    @hdr.setter
+    def hdr(self, arg: bool, /) -> None: ...
+
+    @property
+    def hdr_mu(self) -> float:
+        """mu of the HDR mu-law loss transform"""
+
+    @hdr_mu.setter
+    def hdr_mu(self, arg: float, /) -> None: ...
+
+    @property
+    def hdr_scale(self) -> float:
+        """
+        HDR radiance normalisation (0 = P99 of the training EXRs, measured at load)
+        """
+
+    @hdr_scale.setter
+    def hdr_scale(self, arg: float, /) -> None: ...
+
+    @property
+    def hdr_color_max(self) -> float:
+        """Largest radiance a splat can emit in HDR mode"""
+
+    @hdr_color_max.setter
+    def hdr_color_max(self, arg: float, /) -> None: ...
+
+    @property
     def use_exposure_correction(self) -> bool:
         """Enable combined per-photo exposure correction"""
 
