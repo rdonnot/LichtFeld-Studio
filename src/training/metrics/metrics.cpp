@@ -1575,7 +1575,8 @@ namespace lfs::training {
                     output = fast_rasterize(
                         render_camera, splatData_mutable, background,
                         _params.optimization.mip_filter, {}, render_normal,
-                        dilation_scale);
+                        dilation_scale,
+                        color_activation_for(_params.optimization.hdr, _params.optimization.hdr_color_max));
                 }
                 auto raw_image = output.image;
                 if (appearance_ && output.image.is_valid())
