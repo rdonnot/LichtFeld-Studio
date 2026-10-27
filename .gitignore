@@ -104,3 +104,4 @@ src/rendering/rasterizer/vulkan/shader/radix_sort/*.spv
 /plugins/**/*.pyc
 /tools/**/__pycache__/
 /tools/**/*.pyc
+/plugins/*/settings.json

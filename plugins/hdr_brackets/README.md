@@ -45,6 +45,18 @@ files into bracket 3.
 Scripts and MCP can run the same job with the operator `lfs_plugins.hdr_brackets.operators.MergeOperator`,
 which uses the panel's current settings (`lf.ops.invoke("lfs_plugins.hdr_brackets.operators.MergeOperator")`).
 
+### Loading at startup
+
+LichtFeld 0.5.4.2 ignores the manifest's `auto_start`; it loads at startup only the plugins whose per-user setting
+`load_on_startup` is true (`PluginManager.load_all`, `src/python/lfs_plugins/manager.py`). Tick "Load on startup" in
+the Plugin Marketplace panel, or write `~/.lichtfeld/plugins/hdr_brackets/settings.json`:
+
+```json
+{"load_on_startup": true}
+```
+
+Otherwise load it once per session from the Python console: `lf.plugins.load("hdr_brackets")`.
+
 ## CLI (no app)
 
 ```bash
