@@ -127,6 +127,48 @@ old path (`memcmp`). `ctest -L fast`; `ldr_regression.py` on `smoke_ldr` ±0.1 d
 every step, no NaN in `eval_step_*/*.exr`, μ-law PSNR > the proxy-LDR baseline, `hdr_metrics.py` CRF PSNR per held-out
 exposure logged; `_refine_weight_max` histogram overlaps the LDR run's.
 
+### M2 implementation notes (hdr-m2, 2026-10-27) — what was built, what deviates, what is left
+
+Built as designed, commit by commit on `hdr-m2`: the flag and parameters (`hdr`, `hdr_mu`, `hdr_scale`, `hdr_color_max`;
+`--hdr` clears MRNF's `use_exposure_correction` and `dc_reg`, validation refuses the grid / PPISP / `gut` with the reason
+in the message), the linear EXR input (`.exr` is an image, `LoadParams::hdr_linear` + `PipelinedLoaderConfig::hdr_linear`
+skip the undistort clamp AND the derived JPEG/JPEG 2000 cache — that cache would have clipped radiance > 1 silently —
+`use_16bit_color` forced, P99 `s` over ≤ 16 EXRs written back before the evaluator copies the params), the rasterizer
+(`ColorActivation{color_max, log_radiance}` threaded `fast_rasterize_forward` → `forward_raw` → kernels, stored in the
+context for the backward; `preprocess_cu<bool LOG_RADIANCE>`; `log_radiance_color` in `kernel_utils.cuh`; runtime blend cap;
+`dL/db = c·dL/dc` in the blend backward), the μ-law loss (`kernels/hdr_mulaw.cu`; GT transformed once after the composite so
+`source_gt`/`stable_gt`/`gt_image` all feed the edge, thin-structure, error maps and blob seeding in μ-law), the eval
+(`save_image_exr` on OpenEXRCore, `eval_step_N/<stem>.exr` of the LINEAR render, PSNR/SSIM/LPIPS on `mulaw(x/s)`, the domain
+named in `metrics_report.txt`), `tests/test_hdr_color_chain.cpp`, `tools/synth/make_hdr_dataset.py`.
+
+**Deviations.** (1) *Cap semantics:* a channel at or above `ln cmax` is stored as exactly `color_max` and the backward's
+cap mask is STRICT in HDR (`c < color_max`), so "0 above the cap" holds without the forward/backward disagreeing on
+`expf(logf(cmax))` rounding; LDR keeps `<=`. (2) *Where the activation lives:* not on `FastGSSettings` (unused by any
+caller) but as a trailing defaulted parameter of every entry point and a field of `FastRasterizeContext`; every training
+render passes `color_activation_for(hdr, hdr_color_max)` — trainer, eval (`metrics.cpp`), timelapse, POPSpa scores.
+`application.cpp`'s video render of a loaded model and the viewer do not (M4). (3) *Init in the trainer, not at the init
+sites:* `Trainer::init_log_radiance_sh0` rewrites sh0 once on a fresh start (covers point cloud, `--random`, PLY); MRNF
+blob seeds invert the μ-law before taking the log (`mrnf.cpp`). (4) *Loader:* `--images <folder>` resolves a same-stem
+image of another extension (`resolve_image_extension`) — the M1 output names `pos_000.png` in its sparse model and
+`pos_000.exr` in `images_hdr`. (5) *`hdr_color_max` is absolute* and the M1 merge is in sensor units (`s` = 2419 on
+`smoke_hdr` vs 9.4 on the synthetic truth): the lamp reaches the 1e4 cap (max rendered radiance 9631). Either the cap
+should scale with `s` (`cmax = k·s`) or the plugin should normalise its EXRs — decide in M3/M5 with the file format.
+(6) *μ-law PSNR vs the proxy baseline* is not one number: the proxy model's renders live in the proxy's tone curve.
+Reported side by side below. (7) `tests/image_codecs` is skipped when the OpenEXR C++ library is absent (core-only port).
+
+**Measured (3000 iterations, `--test-every 8 --eval`, GPU shared with another training).**
+- LDR bit-identity: `ldr_reeval.py` on the frozen M0 `baseline_a` project with this binary — "metrics: identical",
+  "eval PNGs: 16 compared, identical". Fresh LDR smoke on `smoke_ldr`: 25.58 dB (stochastic; not a regression number).
+- HDR on the M1 output `smoke_hdr --images images_hdr --hdr`: s = 2419.3, 27.51 dB μ-law in-app, `hdr_metrics.py`
+  27.49 dB mean over the 5 held-out views (29.93 on `pos_008`) against the merged EXRs, no NaN, max radiance 9631.
+- HDR on the synthetic truth `smoke_hdr_gt --images images_hdr --random --hdr`: s = 9.39, 32.98 dB μ-law, 26.5–35.5 per
+  view, max radiance 458 (truth 404), no NaN. Loss finite every step (0.12 → 0.033).
+- Proxy-LDR baseline on the same poses (`smoke_hdr --images images`): 29.26 dB PSNR in its own 8-bit domain.
+
+**Left for "Done when".** A like-for-like proxy comparison (render the proxy model, invert the plugin's tone curve, μ-law
+PSNR against the merged EXR — `tools/eval`), the `_refine_weight_max` histogram overlap check, the CRF/exposure PSNR per
+held-out exposure through `hdr_metrics.py ldr-psnr`, and the cap-vs-scale decision in (5).
+
 ---
 
 ## M3 — Train directly from brackets (exposure model)
