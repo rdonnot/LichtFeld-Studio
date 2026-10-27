@@ -79,3 +79,35 @@ Alternative input path that skips merging (avoids ghosting):
 
 ## Findings log
 (Claude appends notes per milestone here.)
+
+### M0 — 2026-10-27
+**Setup.** Fork `rdonnot/LichtFeld-Studio`; branch `hdr` from `v0.5.4.2` as a worktree at
+`~/Documents/Studio/apps/LichtFeld/LichtFeld-HDR` (the production `LichtFeld-Studio` checkout stays v0.5.4 for
+N'Brain). Build traps: system CMake 3.28 < 3.30 (use `toolchain/cmake-3.31.12`); the shared vcpkg registry had to move
+to master because `vcpkg.json` overrides pin versions (assimp 6.0.5, openssl 3.6.5, curl 8.23 …) absent from both the
+old checkout and the `builtin-baseline`; the x64-linux triplet builds every port twice (dbg + rel).
+
+**Upstream already has most of the HDR plumbing** (file:line in CLAUDE.md's code map), so the milestones shrink:
+- Float EXR decoding exists; training just never asks for it (`decode_float` only in metrics, `.exr` not an image
+  extension). M2 input work = three lines + skipping the undistort clamp.
+- The rasterizer's only radiance ceiling is `max_blend_color = 4.0` (fastgs forward + backward mask); the trainer
+  clamps the corrected image to [0,1] before the loss unless PPISP is on. No sigmoid anywhere. M2 colour work =
+  flag-gated clamp removal, `dc_reg` off, SSIM constants / densification scale checked.
+- **PPISP is M3's exposure model**: per-frame `exp2(EV)` gain seeded from the same EXIF tags our brackets carry,
+  shared per-camera CRF (toe/shoulder/gamma) and vignetting, a scale anchor (`exposure_mean` + `project_mean`). What
+  is missing: an exposure-only mode (its CRF clamps input to [0,1] and runs even with `train_crf=false`), an absolute
+  seed `log2(ISO·t/N²)` instead of `0.5·(ev − mean)`, and "CRF fixed to M1's Debevec curve". No HDR-GS port needed.
+- The viewer already tone-maps after float blending (`lfsDisplayTone`, 7 operators, exposure ×0.1–8) into an 8-bit
+  target; M4 = an OETF after the tone map for linear scenes, an EV-range slider, false colour, banding check.
+- PLY writes raw float SH (M5 = a header comment + a float image writer); SPZ/SOG quantise → refuse or bake.
+- Eval already writes `metrics.csv` / `per_image_metrics.json` (PSNR with `data_range=1`, PNG renders) →
+  `tools/eval/ldr_regression.py` wraps it; HDR eval needs EXR renders (M2).
+
+**Data.** No bracketed capture on the machine; Romain chose synthetic-only for now. `tools/synth/make_scene.py`
+(Blender 4.5, Cycles) renders the ground truth, `make_brackets.py` the EXIF'd JPEG brackets through a known CRF; the
+tests in `tools/` prove the eval path reproduces the JPEGs from EXR + `exposures_gt.json` + `crf.json`.
+`data/smoke_ldr` = the paris-metro-survivor G1 scan (122 PNGs, prior 24.04 dB @30k).
+
+**Plugins.** No job API: a `threading.Thread` + `lf.ui.schedule_on_ui_thread`; progress bar, `DynamicTexture`
+preview, `lf.undo.push/transaction`, `lf.scene.load_file(path, is_dataset=True)` to hand the merged dataset to
+training; plugin deps in its own uv `.venv`. Bundled examples: `docs/plugins/examples/full_plugin/`.
