@@ -43,6 +43,7 @@
 #include "io/project_recovery.hpp"
 #include "io/scene_chapter_adapter.hpp"
 #include "kernels/densification_kernels.hpp"
+#include "kernels/hdr_mulaw.hpp"
 #include "kernels/image_kernels.hpp"
 #include "lfs/kernels/ssim.cuh"
 #include "lfs/training/joint_adam_codec.hpp"
@@ -6351,14 +6352,28 @@ namespace lfs::training {
                 }
 
                 // Per-camera maps cached from the target must not see a per-iteration background.
-                const lfs::core::Tensor source_gt = gt_image;
+                lfs::core::Tensor source_gt = gt_image;
                 lfs::core::Tensor stable_gt = gt_image;
+                bool gt_composited = false;
                 if (composite_target_alpha_ && pipelined_mask_.is_valid() &&
                     params_.optimization.mask_mode == lfs::core::param::MaskMode::None &&
                     params_.optimization.use_alpha_as_mask) {
                     gt_image = kernels::composite_over_background(gt_image, pipelined_mask_,
                                                                   bg_image.is_valid() ? bg_image : bg);
                     stable_gt = kernels::composite_over_background(source_gt, pipelined_mask_, background_);
+                    gt_composited = true;
+                }
+                // HDR: every consumer of the target (loss, edge map, thin-structure map, error map, blob
+                // seeding) reads the mu-law image of the P99-normalised linear radiance.
+                if (step_params.hdr) {
+                    gt_image = kernels::hdr_mulaw_forward(gt_image, step_params.hdr_scale, step_params.hdr_mu);
+                    if (gt_composited) {
+                        stable_gt = kernels::hdr_mulaw_forward(stable_gt, step_params.hdr_scale, step_params.hdr_mu);
+                        source_gt = kernels::hdr_mulaw_forward(source_gt, step_params.hdr_scale, step_params.hdr_mu);
+                    } else {
+                        stable_gt = gt_image;
+                        source_gt = gt_image;
+                    }
                 }
 
                 const bool fastgs_path = !step_params.gut;
@@ -7162,6 +7177,7 @@ namespace lfs::training {
 
                         lfs::core::Tensor corrected_image = output.image;
                         lfs::core::Tensor ppisp_input;
+                        lfs::core::Tensor hdr_x_saved; // signed render / s, for the mu-law backward
                         if (exposure_correction) {
                             if (ppisp_on) {
                                 nvtxRangePush("ppisp_forward");
@@ -7204,7 +7220,11 @@ namespace lfs::training {
                             }
                             // Final tonemapping: clamp to [0, 1] for loss computation.
                             // skip when PPISP is active — CRF already clamps.
-                            if (!ppisp_on) {
+                            // HDR: mu-law of the linear render instead (output.image stays linear).
+                            if (step_params.hdr) {
+                                corrected_image = kernels::hdr_mulaw_forward(
+                                    output.image, step_params.hdr_scale, step_params.hdr_mu, &hdr_x_saved);
+                            } else if (!ppisp_on) {
                                 corrected_image.clamp_(0.0f, 1.0f);
                             }
                         }
@@ -7957,6 +7977,12 @@ namespace lfs::training {
                         // consumed input keeps one fewer full-resolution image live per stage.
                         corrected_image = {};
                         lfs::core::Tensor raster_grad = tile_grad;
+                        if (step_params.hdr && hdr_x_saved.is_valid()) {
+                            // dL/d(linear render) = dL/dy * dy/dv, zero below black.
+                            kernels::hdr_mulaw_backward_(raster_grad, hdr_x_saved, step_params.hdr_scale,
+                                                         step_params.hdr_mu);
+                            hdr_x_saved = {};
+                        }
                         if (exposure_correction) {
                             if (grid_active_this_iter) {
                                 nvtxRangePush("bilateral_grid_backward");
