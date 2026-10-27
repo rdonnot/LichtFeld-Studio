@@ -35,8 +35,11 @@ cmake --build build -j10                            # -j capped: this machine ha
 # Python tests (no LibTorch): app module from build/ is cpython-312, so the venv must be 3.12
 uv venv --python 3.12 build/pytest-venv && uv pip install --python build/pytest-venv/bin/python pytest pytest-xdist numpy pillow cryptography
 LFS_BUILD_DIR=$PWD/build build/pytest-venv/bin/python -m pytest tests/python -q      # ~10 min, toolchain cmake on PATH
-# C++ tests: separate build, needs LibTorch cu129 unpacked at external/libtorch/ (see docs/building_and_distribution.md)
-cmake -S . -B build/tests -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON && cmake --build build/tests --target lichtfeld_tests tensor_hardening_tests -j6
+# C++ tests: separate build (its own vcpkg install: the `tests` feature adds GTest, so it cannot reuse build/vcpkg_installed),
+# LibTorch 2.13.0+cu129 unpacked at external/libtorch/ — the SDK does not ship libcusparseLt.so.0 / libnvshmem_host.so.3
+# that libtorch_cuda.so links: symlink them into external/libtorch/lib/ from the pip wheels
+# nvidia-cusparselt-cu12 + nvidia-nvshmem-cu12 (installed in build/libtorch-deps), or the link fails with undefined cusparseLt*/nvshmem*
+cmake -S . -B build/tests -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON <same compiler/toolchain flags as above> && cmake --build build/tests --target lichtfeld_tests tensor_hardening_tests -j6   # ~35 min
 ctest --test-dir build/tests --output-on-failure -L fast
 
 # smoke-train (headless; `--test-every 8` holds out every 8th image, `--eval` is what writes <out>/metrics.csv)
