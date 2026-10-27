@@ -14,6 +14,7 @@ dependencies = [
 
 [tool.lichtfeld]
 hot_reload = true
+auto_start = true           # load at startup (default false leaves the panel absent until lf.plugins.load)
 plugin_api = ">=1,<2"
 lichtfeld_version = ">=0.5.4"
 required_features = []

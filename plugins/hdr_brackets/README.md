@@ -42,8 +42,8 @@ re-tonemapped with an EV slider (downscaled to 512 px wide).
 Manual overrides for odd brackets: `IMG_0007.jpg=3, IMG_0008.jpg=3` forces those
 files into bracket 3.
 
-Scripts and MCP can run the same job with the operator `hdr_brackets.merge`,
-which uses the panel's current settings (`lf.ops.invoke("hdr_brackets.merge")`).
+Scripts and MCP can run the same job with the operator `lfs_plugins.hdr_brackets.operators.MergeOperator`,
+which uses the panel's current settings (`lf.ops.invoke("lfs_plugins.hdr_brackets.operators.MergeOperator")`).
 
 ## CLI (no app)
 

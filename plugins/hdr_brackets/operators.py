@@ -1,4 +1,4 @@
-"""HDR Brackets: shared settings, background job and the ``hdr_brackets.merge`` operator.
+"""HDR Brackets: shared settings, background job and the Merge operator (registered as lfs_plugins.hdr_brackets.operators.MergeOperator).
 
 The panel and the operator share one ``SETTINGS`` / ``JOB`` pair so a script or an
 MCP call that invokes the operator runs exactly what the panel would run.
@@ -156,10 +156,8 @@ class MergeOperator(Operator):
     label = "Merge Exposure Brackets"
     description = "Align, calibrate and merge exposure brackets to linear EXR using the HDR Brackets panel settings"
 
-    @classmethod
-    def _class_id(cls) -> str:
-        return "hdr_brackets.merge"
-
+    # Registered id (the host derives it from module + qualname; it cannot be overridden):
+    #   lfs_plugins.hdr_brackets.operators.MergeOperator
     @classmethod
     def poll(cls, context) -> bool:
         return not JOB.running
