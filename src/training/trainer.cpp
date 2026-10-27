@@ -2821,6 +2821,59 @@ namespace lfs::training {
         }
     }
 
+    // HDR: P99 of the luminance over at most 16 training EXRs, decoded on the host at full resolution.
+    std::expected<float, std::string> Trainer::measure_hdr_scale(
+        const std::vector<std::shared_ptr<lfs::core::Camera>>& cameras) {
+        constexpr size_t kMaxImages = 16;
+        if (cameras.empty())
+            return std::unexpected("HDR: no training image to measure the radiance scale from");
+        const size_t stride = std::max<size_t>(1, cameras.size() / kMaxImages);
+        std::vector<float> luminance;
+        size_t used = 0;
+        for (size_t i = 0; i < cameras.size() && used < kMaxImages; i += stride) {
+            const auto& path = cameras[i]->image_path();
+            auto [data, width, height, channels] = lfs::core::load_image_float(path);
+            if (!data || width <= 0 || height <= 0 || channels <= 0)
+                return std::unexpected(std::format("HDR: cannot decode '{}' as a float image",
+                                                   lfs::core::path_to_utf8(path)));
+            const size_t pixels = static_cast<size_t>(width) * static_cast<size_t>(height);
+            // Subsample large images: the percentile of a 1-in-k grid is the percentile within noise.
+            const size_t step = std::max<size_t>(1, pixels / 2'000'000);
+            luminance.reserve(luminance.size() + pixels / step + 1);
+            for (size_t p = 0; p < pixels; p += step) {
+                const float* px = data + p * static_cast<size_t>(channels);
+                const float y = channels >= 3 ? 0.2126f * px[0] + 0.7152f * px[1] + 0.0722f * px[2] : px[0];
+                if (std::isfinite(y) && y > 0.0f)
+                    luminance.push_back(y);
+            }
+            lfs::core::free_image_float(data);
+            ++used;
+        }
+        if (luminance.empty())
+            return std::unexpected("HDR: the training EXRs contain no positive finite luminance");
+        const size_t k = std::min(luminance.size() - 1, static_cast<size_t>(0.99 * static_cast<double>(luminance.size())));
+        std::nth_element(luminance.begin(), luminance.begin() + static_cast<std::ptrdiff_t>(k), luminance.end());
+        const float s = luminance[k];
+        if (!(s > 0.0f) || !std::isfinite(s))
+            return std::unexpected(std::format("HDR: degenerate radiance scale {}", s));
+        return s;
+    }
+
+    // HDR: sh0 proxies in [0,1] -> log radiance. In place on the model's sh0 tensor ([N, 1, 3] float32).
+    void Trainer::init_log_radiance_sh0(lfs::core::SplatData& model) {
+        constexpr float kShC0 = 0.28209479177387814f;
+        auto& sh0 = model.sh0();
+        if (!sh0.is_valid() || sh0.numel() == 0)
+            return;
+        auto values = sh0.to_vector();
+        for (float& v : values) {
+            const float p = std::clamp(0.5f + kShC0 * v, 1e-3f, 1.0f);
+            v = (std::log(p) - 0.5f) / kShC0;
+        }
+        sh0 = lfs::core::Tensor::from_vector(values, sh0.shape(), sh0.device());
+        LOG_INFO("HDR: {} sh0 initialised as log radiance from their LDR proxy colours", values.size());
+    }
+
     std::expected<void, std::string> Trainer::initialize(const lfs::core::param::TrainingParameters& params) {
         if (const auto validation_error = params.validate(); !validation_error.empty()) {
             return std::unexpected("Invalid training parameters: " + validation_error);
@@ -2981,6 +3034,21 @@ namespace lfs::training {
 
             train_dataset_size_ = train_dataset_->size();
 
+            // HDR: the mu-law loss runs on x = v / s. s is the P99 luminance of (at most 16 of) the training
+            // EXRs, measured once here and written back so the saved training config and a resume reuse it.
+            if (params_.optimization.hdr && params_.optimization.hdr_scale <= 0.0f) {
+                const auto scale = measure_hdr_scale(train_dataset_->get_cameras());
+                if (!scale)
+                    return std::unexpected(scale.error());
+                params_.optimization.hdr_scale = *scale;
+                LOG_INFO("HDR: radiance scale s = {} (P99 luminance of the training EXRs); mu = {}, colour cap = {}",
+                         *scale, params_.optimization.hdr_mu, params_.optimization.hdr_color_max);
+            } else if (params_.optimization.hdr) {
+                LOG_INFO("HDR: radiance scale s = {} (from the configuration); mu = {}, colour cap = {}",
+                         params_.optimization.hdr_scale, params_.optimization.hdr_mu,
+                         params_.optimization.hdr_color_max);
+            }
+
             // If using Scene mode and no strategy yet, create one
             if (scene_ && !strategy_) {
                 auto* model = scene_->getTrainingModel();
@@ -3005,6 +3073,12 @@ namespace lfs::training {
                 lfs::core::random_choose(splat, max_cap);
                 syncTrainingSceneTopology(scene_, splat);
             }
+
+            // HDR, fresh start: the SH hold log radiance. The initial colours are LDR proxies p in [0,1]
+            // (point cloud / random / PLY), so sh0 becomes (ln(clamp(p, 1e-3, 1)) - 0.5) / SH_C0. A resumed
+            // checkpoint already stores log values.
+            if (params_.optimization.hdr && current_iteration_ == 0)
+                init_log_radiance_sh0(splat);
 
             // Re-initialize strategy with new parameters
             strategy_->set_training_dataset(train_dataset_);
@@ -8853,7 +8927,9 @@ namespace lfs::training {
             pipelined_config.prefetch_count = 8;
             pipelined_config.output_queue_size = 4;
             pipelined_config.io_threads = 2;
-            pipelined_config.use_16bit_color = params_.dataset.loading_params.use_16bit_color;
+            pipelined_config.use_16bit_color = params_.dataset.loading_params.use_16bit_color ||
+                                               params_.optimization.hdr;
+            pipelined_config.hdr_linear = params_.optimization.hdr;
 
             // Non-JPEG images (PNG, WebP) need CPU decoding - use more threads until cache warms
             constexpr size_t MIN_COLD_THREADS = 4;

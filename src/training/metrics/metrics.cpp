@@ -189,6 +189,12 @@ namespace lfs::training {
             load_params.output_uint8 = exact_uint8;
             load_params.decode_16bit = !exact_uint8;
             load_params.decode_float = !exact_uint8;
+            if (params.optimization.hdr) {
+                load_params.output_uint8 = false;
+                load_params.decode_16bit = true;
+                load_params.decode_float = true;
+                load_params.hdr_linear = true;
+            }
             load_params.skip_blob_cache = true;
             load_params.cuda_stream = lfs::core::getCurrentCUDAStream();
             if (params.optimization.undistort && camera.is_undistort_prepared() &&
@@ -208,7 +214,8 @@ namespace lfs::training {
         config.decoder_pool_size = 1;
         config.io_threads = 1;
         config.cold_process_threads = 1;
-        config.use_16bit_color = params.dataset.loading_params.use_16bit_color;
+        config.use_16bit_color = params.dataset.loading_params.use_16bit_color || params.optimization.hdr;
+        config.hdr_linear = params.optimization.hdr;
         return std::make_unique<lfs::io::PipelinedImageLoader>(config);
     }
 

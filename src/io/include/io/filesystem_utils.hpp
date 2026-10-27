@@ -349,7 +349,7 @@ namespace lfs::io {
     // Check if a file has an image extension
     inline bool is_image_file(const std::filesystem::path& path) {
         static const std::vector<std::string> image_extensions = {
-            ".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"};
+            ".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".exr"};
 
         std::string ext = lfs::core::path_to_utf8(path.extension());
         detail::ascii_lower_inplace(ext);
