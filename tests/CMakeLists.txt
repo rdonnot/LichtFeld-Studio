@@ -4,7 +4,13 @@
 # Testing module - comprehensive tests for all components
 
 if(BUILD_TESTS OR BUILD_FORMAT_TESTS)
+    # The codec tests link the OpenEXR C++ library; a core-only OpenEXR port (OpenEXRCore, what the app
+# needs) has no OpenEXR::OpenEXR target, and the rest of the suite must still configure.
+if(TARGET OpenEXR::OpenEXR)
     add_subdirectory(image_codecs)
+else()
+    message(STATUS "tests/image_codecs skipped: OpenEXR::OpenEXR (C++ library) is not installed")
+endif()
 endif()
 
 # =============================================================================
