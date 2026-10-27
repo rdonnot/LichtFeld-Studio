@@ -1302,11 +1302,6 @@ target_link_libraries(tensor_hardening_tests PRIVATE
     CUDA::cudart
     CUDA::curand
 )
-# liblfs_core.so uses <stacktrace>; with GCC 14 the symbols live in libstdc++exp and the shared library does not
-# carry the dependency, so every executable linking lfs_core needs it (lichtfeld_format_tests above does the same).
-if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    target_link_libraries(tensor_hardening_tests PRIVATE stdc++exp)
-endif()
 
 if(MSVC)
     target_compile_options(tensor_hardening_tests PRIVATE

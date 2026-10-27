@@ -177,7 +177,7 @@ if(WIN32)
 endif()
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 12)
-    target_link_libraries(lfs_core PRIVATE stdc++exp)
+    target_link_libraries(lfs_core PUBLIC stdc++exp)
 endif()
 
 # Compiler options
