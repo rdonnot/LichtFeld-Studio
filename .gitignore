@@ -88,3 +88,13 @@ generatedSchema.usda
 # only creates merge-conflict churn).
 src/rendering/rasterizer/vulkan/shader/generated/*.spv
 src/rendering/rasterizer/vulkan/shader/radix_sort/*.spv
+
+# hdr fork: local data and run outputs
+/out/
+/tools/.venv/
+
+# hdr fork: tooling is tracked (upstream ignores *.py outside its own list)
+!/tools/pyproject.toml
+!/tools/uv.lock
+!/tools/eval/**
+!/tools/synth/**
