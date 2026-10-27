@@ -38,6 +38,95 @@ Plugin folder: `plugins/hdr_brackets/` (own uv env).
 
 **Done when:** trains on `smoke_hdr` EXRs without NaNs; log-luminance PSNR beats a baseline trained on the proxy LDR; `smoke_ldr` regression within ±0.1 dB.
 
+### M2 design decision (hdr-architect, 2026-10-27) — implement exactly this, file:line read on v0.5.4.2
+
+**Decision.** Store **log-radiance in the SH**: in HDR mode the full SH sum `b = 0.5 + SH_C0·sh0 + Σ Yᵢcᵢ`
+(`kernel_utils.cuh:290-313`) becomes `c = exp(min(b, ln cmax))`, `cmax = 1e4`; the forward clamp becomes a runtime
+`color_max` (4.0 unchanged for LDR, `kernels_forward.cuh:710`, `kernels_backward.cuh:935-939`); the lower clamp is a
+no-op (exp > 0). The loss runs on **μ-law of the P99-normalised image**, `y = log1p(μ·x)/log1p(μ)`, `x = v/s`,
+μ = 5000, applied to render and GT right before `compute_photometric_loss_with_gradient` (`trainer.cpp:1660`), the
+gradient scaled back at `trainer.cpp:7883`. PPISP / bilateral grid are **refused** under `--hdr` (M3 brings the
+exposure-only PPISP). Densification needs **no retune**. Eval writes EXR renders and reports μ-law PSNR; CRF/exposure
+PSNR stays in `tools/eval`.
+
+*Why log, not a raised clamp.* Adam's step on sh0 is bounded by `shs_lr = 0.0025` (`parameters.hpp:251`): with linear
+colour `Δc ≈ SH_C0·lr ≈ 7e-4` radiance/step, a sun splat at x = 1000 needs ~1.4 M steps; in log space the same step is
+×1.0007/step → ×1000 in ~10 k steps. The chain is self-conditioning: `dL/db = c·dL/dc = (μx/(1+μx))/ln(1+μ)·dL/dy`,
+bounded in `[0, 0.117]` for every brightness — no explosion for radiance ≫ 1, no vanishing in shadows. Negative ShN lobes
+become multiplicative darkening (no zero clamp needed). ShN is q16 with one (min,max) per 256 splats
+(`kernel_utils.cuh:78-80`, `sh_value_codec.hpp:10`): linear 1e3 lobes would ruin a block's step (0.015), log lobes are
+O(1). sh0 is float32 (`kernels_backward.cuh:250`); the f16 ShN swizzle is only a viewer bind (`kernel_utils.cuh:61`),
+training storage is q16 (`training_setup.cpp:708`) → no 65504 overflow. **Cost / file format:** PLY `f_dc` becomes log
+radiance (M5 writes `comment hdr_log_sh`; stock viewers show garbage until baked) and the viewer SH shader needs an
+`exp` (M4). Init: `sh0 = (ln(clamp(p,1e-3,1)) − 0.5)/SH_C0` from the proxy colour p (`mrnf.cpp:2542`,
+`splat_data.cpp:2889`). μ = 5000 over log1p/PQ: y′(0)/y′(1) ≈ 5000 matches the room's ~14 stops, PQ needs an absolute
+nit anchor we lack, and `tools/eval/hdr_metrics.py` already uses this μ with P99 normalisation.
+
+**Changes.**
+- `core/include/core/parameters.hpp` (OptimizationParameters): `bool hdr = false; float hdr_mu = 5000.f;
+  float hdr_scale = 0.f /*0 = P99 at load*/; float hdr_color_max = 1e4f;`. Follow `gut`: `argument_parser.cpp:102`
+  `OptimizationCliBinding{"--hdr","hdr",Bool}`, `:914` `::args::Flag`, `:1615` capture, `:1800` `setFlag`, `:1911`
+  `note_opt`; `optimization_properties.cpp:1027` `.bool_prop(&OptimizationParameters::hdr, …)` (JSON follows,
+  `parameters.cpp:808,1323`); `py_params.cpp:1109` `def_prop_rw("hdr", …)`. Validation beside `parameters.cpp:1035`:
+  `hdr && (use_exposure_correction || use_bilateral_grid || use_ppisp || gut)` → error (MRNF defaults set
+  `use_exposure_correction = true`, `parameters.cpp:1251` — `--hdr` must clear it); `hdr` forces `dc_reg = 0`.
+- Input: `trainer.cpp:8856` `pipelined_config.use_16bit_color |= hdr`; `dataset.hpp:546` add
+  `request.params.decode_float = hdr; request.params.hdr_linear = hdr;` (new `LoadParams` field,
+  `cache_image_loader.hpp:50`); `pipelined_image_loader.cpp:554` `if (!params.hdr_linear) tensor = tensor.clamp(0,1)`
+  (keeps metrics' float path bit-identical); `filesystem_utils.hpp:352` add `".exr"`. EXR already probes as Float32
+  (`image_io.cpp:928-938` → step 0 → `decodes_float`, loader `:443`) and the float path skips
+  `quantize_rgb_to_u16_grid` (loader `:575`).
+- Scale `s`: at dataset load when `hdr_scale == 0`: P99 of luminance over ≤ 16 training EXRs, written back into
+  `params.optimization.hdr_scale` before `write_training_config` (`metrics.cpp:1329`) so a resume reuses it; log it.
+- Rasterizer: `rasterization_api.h:21` `FastGSSettings`: `float color_max = 4.f; bool log_radiance = false;` threaded
+  through `forward_raw`/`backward_raw` (`rasterization_api.cu:333,675`). `kernel_utils.cuh:313`:
+  `if (log_radiance) result = expf(fminf(result, log_color_max));` (template bool on the preprocess kernels so LDR code
+  is unchanged; `expf`, not `__expf`). `kernels_forward.cuh:710` / `kernels_backward.cuh:935-939`:
+  `config::max_blend_color` → `color_max`. `kernels_backward.cuh:1085`: `dL_dcolor = blending_weight * grad_c *
+  color_grad_factor * (LOG ? color : 1)` — `color` is the staged exp output in registers; the cap mask
+  (`c ≤ color_max` ⇔ `b ≤ ln cmax`) works unchanged. `convert_sh_to_color_backward_grads` (`:1118`) receives `dL/db`
+  and needs no edit.
+- Loss: new `kernels/hdr_mulaw.cu`: `hdr_mulaw_forward(v, s, μ) → y, x_saved` (x = max(v,0)/s) and
+  `hdr_mulaw_backward_(g, x_saved, s, μ)`: `g *= μ/((1+μx)·ln(1+μ)·s)`, 0 where v < 0. `trainer.cpp:6280`: after
+  `stable_gt`/composite, `if (hdr) gt_image = stable_gt = mulaw(gt)` — feeds the edge map (`:5871`), thin-structure
+  map, error map and loss. `trainer.cpp:7110/7132`: `else if (hdr) corrected_image = mulaw(output.image)` (keep
+  `x_saved`), the clamp stays in the LDR branch. `trainer.cpp:7883`: `raster_grad = tile_grad; if (hdr)
+  mulaw_backward_(raster_grad, x_saved)`. SSIM `C1/C2` (`ssim.cu:1977,2031…`) stay valid: both inputs in [0,1].
+  `gradient_loss_weight` (`trainer.cpp:1645`), the L1 fallback error map (`:7775`) and the SSIM/CS error map
+  (`:7711-7741`) read the transformed tensors — automatically μ-law. `raw_loss_input` (`:7137`) only exists with
+  grid/PPISP, which HDR refuses.
+- Densification: MRNF and MCMC accumulate `blending_weight · pixel_error` from the SSIM/CS error map
+  (`kernels_backward.cuh:1082,1115`; `mrnf_kernels.cu:330`; `mcmc.cpp:739`) — dimensionless in [0,1] on μ-law images,
+  so `growth_grad_threshold = 0.003` (`parameters.hpp:379`) keeps its meaning. The positional path
+  (`length(dL_dmean2d·½wh)`, `:536`) runs only for `None` without an error map (`backward.cu:208`); the mean2d
+  gradient (`:1108`) carries `(dL/dy)·μ(xᵢ−x_behind)/((1+μx)ln(1+μ))`, same order as LDR. No retune; verify by
+  histogram of `_refine_weight_max` (`mrnf.cpp:1836`).
+- Eval: `metrics.cpp`: in HDR force `bit_depth = 32`, replace `image.clamp(0,1)` (`:251`) by `mulaw(x/s)` for GT
+  (`:656`) and render (`:1056`) → PSNR/SSIM at `data_range = 1` (`:1449`) are μ-law metrics (say so in metrics.csv).
+  Before that, save the linear render: new `save_image_exr(path, CHW float)` in `core/image_exr.cpp` — OpenEXRCore is
+  linked (`src/core/CMakeLists.txt:160`) and ships the write API (`exr_start_write` `openexr_context.h:467`,
+  `exr_write_header` `:580`, `openexr_encode.h`): start_write → add_part(scanline) → required_attr_simple → channels
+  R,G,B FLOAT → ZIP → write_header → per chunk `exr_write_scanline_chunk_info` + encoding init/default/run (~80 lines).
+  Call beside the PNG save (`metrics.cpp:2117`) as `eval_dir/<stem>.exr`. LDR-at-source-exposure PSNR:
+  `tools/eval/hdr_metrics.py` over `eval_step_N/*.exr` + `exposures_gt.json` + `crf.json` — not in core.
+
+**Risks.** Log init far from truth (sky/lamp at ln 1 = 0 vs ln 1000): ~10 k Adam steps to climb; if highlights lag at
+30 k add `hdr_sh0_lr_scale = 4` — watch max `exp(b)` per eval. `expf` overflow capped at `ln cmax`. `bg_color` is
+radiance now: white = 1.0 after normalisation; default black. A resume with a different `s` silently changes the loss
+→ `hdr_scale` written back. LOD colour decode (`bhatt_lod.cpp:146`, `octree_lod.cpp:135`) and the Vulkan SH shader
+read linear → wrong until M4 (viewer shows log values meanwhile). `thin_structure`/mask paths assume `gt_tile` Float32
+— true in HDR, check once.
+
+**Verification.** `tests/test_hdr_color_chain.cpp` in `lichtfeld_tests` (list `tests/CMakeLists.txt:773`, labels
+`fast;gpu`), gtest + LibTorch double reference as `test_fused_l1_ssim.cpp:13-80`: (a) μ-law kernel vs autograd on
+x ∈ [−1, 50], rel < 1e-5, zero grad for x < 0; (b) a `__global__` wrapper around `convert_sh_to_color` (pattern
+`tests/fastgs_tile_culling_boundary_cuda.cu`), 32 splats, SH3: forward = `exp(min(b, ln cmax))`, `dL/dsh0 =
+SH_C0·c·g` and 0 above the cap, central differences h = 1e-3, rel < 1e-4; (c) `log_radiance = false` bit-equals the
+old path (`memcmp`). `ctest -L fast`; `ldr_regression.py` on `smoke_ldr` ±0.1 dB and the LDR run's eval PNGs
+`cmp`-identical to the M0 baseline at the same seed. `--hdr --iter 3000 --test-every 8` on `smoke_hdr`: finite loss
+every step, no NaN in `eval_step_*/*.exr`, μ-law PSNR > the proxy-LDR baseline, `hdr_metrics.py` CRF PSNR per held-out
+exposure logged; `_refine_weight_max` histogram overlaps the LDR run's.
+
 ---
 
 ## M3 — Train directly from brackets (exposure model)
