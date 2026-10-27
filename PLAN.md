@@ -213,6 +213,18 @@ old checkout and the `builtin-baseline`; the x64-linux triplet builds every port
 tests in `tools/` prove the eval path reproduces the JPEGs from EXR + `exposures_gt.json` + `crf.json`.
 `data/smoke_ldr` = the paris-metro-survivor G1 scan (122 PNGs, prior 24.04 dB @30k).
 
+**Baseline (M0, v0.5.4.2 build, RTX A5000).** `smoke_ldr` (G1, 122 images, every 8th held out = 16): 3000 it in
+28 s (107 it/s); 7000 it in ~2 min 20 s. Five identical 7000-it runs: PSNR 27.20 / 29.20 / 27.48 / 26.90 / 27.13
+(mean 27.58, std 0.93 dB), SSIM 0.9446 ± 0.0038, LPIPS 0.1236 ± 0.0034, ~1.1 M Gaussians. There is no seed flag and
+MRNF is stochastic, so ±0.1 dB on fresh trainings is unmeasurable; evaluation of a frozen project is deterministic
+(two re-evals of `out/baseline_a/project.licht`: identical metrics and pixel-identical PNGs) →
+`tools/eval/ldr_reeval.py` is the bit-exact LDR check, `ldr_regression.py` the statistical one (CLAUDE.md "Metrics").
+`--test-every` alone evaluates nothing: `--eval` is required. Eval applies PPISP/exposure correction to the held-out
+frames ("16 from the nearest training frames") because `--exposure-correction` is on by default.
+Python suite: 4225 passed, 277 skipped (needs a 3.12 venv with pillow + cryptography; the 47 first-run failures were
+those two missing packages, not the build). C++ tests: LibTorch 2.13.0+cu129 unpacked at `external/libtorch`;
+`build/tests` needs the vcpkg `tests` feature (GTest) so it cannot reuse the main `vcpkg_installed`.
+
 **Plugins.** No job API: a `threading.Thread` + `lf.ui.schedule_on_ui_thread`; progress bar, `DynamicTexture`
 preview, `lf.undo.push/transaction`, `lf.scene.load_file(path, is_dataset=True)` to hand the merged dataset to
 training; plugin deps in its own uv `.venv`. Bundled examples: `docs/plugins/examples/full_plugin/`.

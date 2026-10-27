@@ -32,8 +32,9 @@ cmake -B build -G Ninja -DCMAKE_MAKE_PROGRAM=/usr/bin/ninja -DCMAKE_BUILD_TYPE=R
 cmake --build build -j10                            # -j capped: this machine has crashed on RAM
 ./build/LichtFeld-Studio --version
 
-# Python tests (no LibTorch): app module from build/
-LFS_BUILD_DIR=$PWD/build tools/.venv/bin/python -m pytest tests/python -q
+# Python tests (no LibTorch): app module from build/ is cpython-312, so the venv must be 3.12
+uv venv --python 3.12 build/pytest-venv && uv pip install --python build/pytest-venv/bin/python pytest pytest-xdist numpy pillow cryptography
+LFS_BUILD_DIR=$PWD/build build/pytest-venv/bin/python -m pytest tests/python -q      # ~10 min, toolchain cmake on PATH
 # C++ tests: separate build, needs LibTorch cu129 unpacked at external/libtorch/ (see docs/building_and_distribution.md)
 cmake -S . -B build/tests -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON && cmake --build build/tests --target lichtfeld_tests tensor_hardening_tests -j6
 ctest --test-dir build/tests --output-on-failure -L fast
@@ -61,10 +62,22 @@ name restores nothing from the binary cache). Tooling (eval, synthetic data) run
 - `data/smoke_hdr/` — produced by the plugin from `brackets_raw` (M1 output).
 - Hold out ~10% of positions for evaluation (`--test-every 8`). **Never train on held-out images.**
 
-## Metrics (scripts in `tools/eval/`)
-- LDR regression: PSNR/SSIM on `smoke_ldr` within ±0.1 dB of upstream `main`.
-- HDR: PSNR on held-out views **at each held-out exposure** (render HDR → apply that image's exposure + CRF → compare with the LDR photo). Also report PSNR in log-luminance (μ-law) against merged EXR.
-- Log metrics to `out/metrics.csv` (commit hash, milestone, scene, metric, value).
+## Metrics (scripts in `tools/eval/`, rows in `out/metrics.csv`: timestamp,commit,milestone,scene,run,metric,value)
+- **Training is not reproducible** (no seed flag; MRNF refinement is stochastic): five identical 7000-iteration runs
+  on `smoke_ldr` gave PSNR 26.90–29.20 (mean 27.58, std 0.93 dB), SSIM 0.941–0.951, LPIPS 0.118–0.126. A ±0.1 dB
+  criterion cannot be read off fresh trainings. So the LDR guarantee is two-tier:
+  1. **Bit-exact** (every rasterizer / loader / eval change): `ldr_reeval.py ../out/baseline_a/project.licht
+     --reference ../out/baseline_a` re-evaluates the frozen M0 reference project with the current binary (hdr off) —
+     `metrics.csv` row and the 16 held-out eval PNGs must be pixel-identical (evaluation of a frozen project IS
+     deterministic; verified twice). `out/baseline_a/` is the reference — do not delete it.
+  2. **Statistical** (training-loop changes): `ldr_regression.py <out dir>` logs a fresh run and passes when |ΔPSNR|
+     ≤ 0.1 dB + the baseline std (0.93 dB) against the mean of the `baseline_*` rows; several runs beat one.
+- HDR: PSNR on held-out views **at each held-out exposure** (render HDR → that image's exposure + CRF → compare with
+  the LDR photo: `hdr_metrics.py ldr-psnr`), and μ-law PSNR (μ = 5000, both images normalised by the reference's
+  P99) against the merged EXR / the synthetic truth: `hdr_metrics.py mu-psnr`. HDR eval renders as EXR arrive with M2.
+- Python suite of the app: `build/pytest-venv` (Python 3.12 = the embedded module's ABI; pytest, pytest-xdist, numpy,
+  pillow, cryptography) with the toolchain CMake on PATH (one test configures CMake): 4225 passed, 277 skipped on
+  v0.5.4.2 (2026-10-27). C++ `-L fast` baseline: see PLAN.md M0 once the LibTorch test build has run.
 
 ## Code map (v0.5.4.2, read 2026-10-27; line numbers drift — grep the quoted text)
 - **Training loop / loss:** `src/training/trainer.cpp` — render → (PPISP or exposure grid) → `corrected_image.clamp_(0,1)`
