@@ -38,9 +38,9 @@ LFS_BUILD_DIR=$PWD/build tools/.venv/bin/python -m pytest tests/python -q
 cmake -S . -B build/tests -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON && cmake --build build/tests --target lichtfeld_tests tensor_hardening_tests -j6
 ctest --test-dir build/tests --output-on-failure -L fast
 
-# smoke-train (headless; `--test-every 8` holds out every 8th image, eval writes <out>/metrics.csv)
-./build/LichtFeld-Studio --headless --train -d data/smoke_ldr -o out/smoke_ldr --iter 3000 --test-every 8 --export ply
-./build/LichtFeld-Studio --headless --train -d data/smoke_hdr -o out/smoke_hdr --iter 3000 --test-every 8 --export ply --hdr   # M2+
+# smoke-train (headless; `--test-every 8` holds out every 8th image, `--eval` is what writes <out>/metrics.csv)
+./build/LichtFeld-Studio --headless --train -d data/smoke_ldr -o out/smoke_ldr --iter 3000 --test-every 8 --eval --export ply
+./build/LichtFeld-Studio --headless --train -d data/smoke_hdr -o out/smoke_hdr --iter 3000 --test-every 8 --eval --export ply --hdr   # M2+
 cd tools && uv run python eval/ldr_regression.py ../out/smoke_ldr --milestone M0 --scene smoke_ldr --run baseline_a
 ```
 Traps: the shared `../vcpkg` registry checkout must be at least as new as the versions `vcpkg.json` overrides
