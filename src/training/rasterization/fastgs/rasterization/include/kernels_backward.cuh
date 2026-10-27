@@ -693,7 +693,9 @@ namespace fast_lfs::rasterization::kernels::backward {
         const uint width,
         const uint height,
         const uint grid_width,
-        const int blend_batch_size_runtime) {
+        const int blend_batch_size_runtime,
+        const float color_max,
+        const bool log_radiance) {
         (void)image;
         (void)alpha_map;
         auto block = cg::this_thread_block();
@@ -932,11 +934,16 @@ namespace fast_lfs::rasterization::kernels::backward {
                     s_conic_opacity[thread_rank] = primitive_conic_opacity[work_idx];
                     const float3 color_unclamped = make_float3(primitive_color[work_idx]);
                     const float3 color_clamped =
-                        fminf(fmaxf(color_unclamped, 0.0f), config::max_blend_color);
+                        fminf(fmaxf(color_unclamped, 0.0f), color_max);
+                    // HDR stores a capped channel as exactly color_max: strict compare masks it out.
                     const unsigned factor_bits =
-                        (color_unclamped.x <= config::max_blend_color ? 1u : 0u) |
-                        (color_unclamped.y <= config::max_blend_color ? 2u : 0u) |
-                        (color_unclamped.z <= config::max_blend_color ? 4u : 0u);
+                        log_radiance
+                            ? ((color_unclamped.x < color_max ? 1u : 0u) |
+                               (color_unclamped.y < color_max ? 2u : 0u) |
+                               (color_unclamped.z < color_max ? 4u : 0u))
+                            : ((color_unclamped.x <= color_max ? 1u : 0u) |
+                               (color_unclamped.y <= color_max ? 2u : 0u) |
+                               (color_unclamped.z <= color_max ? 4u : 0u));
                     s_color[thread_rank] = make_float4(
                         color_clamped.x, color_clamped.y, color_clamped.z, __uint_as_float(factor_bits));
                     if (stage_depth)
@@ -1082,7 +1089,10 @@ namespace fast_lfs::rasterization::kernels::backward {
                             accum.densification_error_weighted += blending_weight * pixel_error;
                         }
 
-                        const float3 dL_dcolor = blending_weight * grad_c * color_grad_factor;
+                        // HDR: the SH backward wants dL/db = c * dL/dc (c = exp(b) is the staged colour).
+                        // LDR multiplies by exactly 1, which is bit-identical to the old product.
+                        const float3 log_chain = log_radiance ? color : make_float3(1.0f, 1.0f, 1.0f);
+                        const float3 dL_dcolor = blending_weight * grad_c * color_grad_factor * log_chain;
                         accum.color_x += dL_dcolor.x;
                         accum.color_y += dL_dcolor.y;
                         accum.color_z += dL_dcolor.z;

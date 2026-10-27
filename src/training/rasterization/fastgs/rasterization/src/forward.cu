@@ -200,7 +200,12 @@ fast_lfs::rasterization::ForwardResult fast_lfs::rasterization::forward(
     bool mip_filter,
     cudaStream_t stream,
     float* max_screen_share,
-    float dilation_scale) {
+    float dilation_scale,
+    ColorActivation color_activation) {
+
+    // HDR: exp(b) below ln(color_max); a value at or above the cap is stored as color_max so the
+    // backward's cap mask (c < color_max) stops its gradient. LDR ignores log_color_max.
+    const float log_color_max = logf(color_activation.color_max);
 
     const dim3 grid(div_round_up(width, config::tile_width), div_round_up(height, config::tile_height), 1);
     const uint64_t n_tiles_u64 = static_cast<uint64_t>(grid.x) * static_cast<uint64_t>(grid.y);
@@ -245,7 +250,8 @@ fast_lfs::rasterization::ForwardResult fast_lfs::rasterization::forward(
                                  float3* normals,
                                  const uint n_work_items,
                                  float* screen_share) {
-        kernels::forward::preprocess_cu<<<div_round_up(n_work_items, static_cast<uint>(config::block_size_preprocess)), config::block_size_preprocess, 0, stream>>>(
+        auto launch_typed = [&]<bool LOG_RADIANCE>() {
+        kernels::forward::preprocess_cu<LOG_RADIANCE><<<div_round_up(n_work_items, static_cast<uint>(config::block_size_preprocess)), config::block_size_preprocess, 0, stream>>>(
             means,
             scales_raw,
             rotations_raw,
@@ -287,7 +293,14 @@ fast_lfs::rasterization::ForwardResult fast_lfs::rasterization::forward(
             far_,
             mip_filter,
             dilation_scale,
-            screen_share);
+            screen_share,
+            color_activation.color_max,
+            log_color_max);
+        };
+        if (color_activation.log_radiance)
+            launch_typed.template operator()<true>();
+        else
+            launch_typed.template operator()<false>();
         LFS_CUDA_LAUNCH_CHECK(stream, "fastgs.forward.preprocess");
     };
 
@@ -588,7 +601,8 @@ fast_lfs::rasterization::ForwardResult fast_lfs::rasterization::forward(
             height,
             grid.x,
             warp_cull_mode,
-            blend_batch_override);
+            blend_batch_override,
+            color_activation.color_max);
         LFS_CUDA_LAUNCH_CHECK(stream, "fastgs.forward.blend");
     };
     if (normal != nullptr) {

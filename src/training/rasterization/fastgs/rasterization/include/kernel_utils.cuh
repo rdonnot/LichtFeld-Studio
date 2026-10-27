@@ -309,6 +309,16 @@ namespace fast_lfs::rasterization::kernels {
         return result;
     }
 
+    // HDR colour activation on the SH sum b: c = exp(b) while b < ln(color_max), else exactly
+    // color_max (the blend's cap mask then zeroes the gradient). expf, not __expf: the backward
+    // multiplies by this value and the test pins it to a double reference.
+    __device__ inline float3 log_radiance_color(const float3 b, const float color_max, const float log_color_max) {
+        return make_float3(
+            b.x < log_color_max ? expf(b.x) : color_max,
+            b.y < log_color_max ? expf(b.y) : color_max,
+            b.z < log_color_max ? expf(b.z) : color_max);
+    }
+
     // Max contiguous (non-shN) attributes per primitive (rotation = 4 is the largest).
     constexpr int MAX_FUSED_ADAM_ATTRIBUTES = 4;
 

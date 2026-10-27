@@ -78,7 +78,8 @@ void fast_lfs::rasterization::backward(
     float* edge_score_out,
     float* impact_sum_out,
     float* impact_peak_out,
-    cudaStream_t stream) {
+    cudaStream_t stream,
+    ColorActivation color_activation) {
     const dim3 grid(div_round_up(width, config::tile_width), div_round_up(height, config::tile_height), 1);
     const uint64_t n_tiles_u64 = static_cast<uint64_t>(grid.x) * static_cast<uint64_t>(grid.y);
     const int n_tiles = checked_to_int(n_tiles_u64, "n_tiles exceeds int range");
@@ -141,7 +142,9 @@ void fast_lfs::rasterization::backward(
                         width,
                         height,
                         grid.x,
-                        blend_batch_override);
+                        blend_batch_override,
+                        color_activation.color_max,
+                        color_activation.log_radiance);
                 LFS_CUDA_LAUNCH_CHECK(stream, "fastgs.backward.blend_backward");
             };
         auto launch_production = [&]<DensificationType DENS_TYPE>() {

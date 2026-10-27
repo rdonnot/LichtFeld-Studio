@@ -3514,7 +3514,8 @@ namespace lfs::training {
                     } else {
                         output = fast_rasterize(
                             render_camera, model, background, params.optimization.mip_filter,
-                            {}, false, dilation_scale);
+                            {}, false, dilation_scale,
+                            color_activation_for(params.optimization.hdr, params.optimization.hdr_color_max));
                     }
 
                     raw_image = output.image;
@@ -6830,7 +6831,8 @@ namespace lfs::training {
                                     *cam, strategy_->get_model(), bg,
                                     0, 0, 0, 0,
                                     step_params.mip_filter, bg_tile,
-                                    render_normal, render_depth);
+                                    render_normal, render_depth, 1.0f, true,
+                                    color_activation_for(step_params.hdr, step_params.hdr_color_max));
                                 if (rasterize_result) {
                                     output = std::move(rasterize_result->first);
                                     fast_ctx.emplace(std::move(rasterize_result->second));
@@ -8557,7 +8559,9 @@ namespace lfs::training {
                                     rendered_timelapse_output = gsplat_rasterize(*cam_to_use, strategy_->get_model(), background_,
                                                                                  1.0f, false, GsplatRenderMode::RGB, true);
                                 } else {
-                                    rendered_timelapse_output = fast_rasterize(*cam_to_use, strategy_->get_model(), background_);
+                                    rendered_timelapse_output = fast_rasterize(
+                                        *cam_to_use, strategy_->get_model(), background_, false, {}, false, 1.0f,
+                                        color_activation_for(step_params.hdr, step_params.hdr_color_max));
                                 }
 
                                 // Get folder name to save in by stripping file extension

@@ -44,6 +44,7 @@ namespace fast_lfs::rasterization::kernels::forward {
         return (static_cast<InstanceKey>(tile_key) << kInstanceDepthBits) | static_cast<InstanceKey>(depth_key);
     }
 
+    template <bool LOG_RADIANCE>
     __global__ void preprocess_cu(
         const float3* __restrict__ means,
         const float3* __restrict__ raw_scales,
@@ -86,9 +87,15 @@ namespace fast_lfs::rasterization::kernels::forward {
         const float far_,
         const bool mip_filter,
         const float dilation_scale,
-        float* __restrict__ max_screen_share) {
+        float* __restrict__ max_screen_share,
+        const float color_max,     // HDR cap (unused by the LDR instantiation)
+        const float log_color_max) {
         (void)w;
         (void)h;
+        if constexpr (!LOG_RADIANCE) {
+            (void)color_max;
+            (void)log_color_max;
+        }
         auto work_idx = cg::this_grid().thread_rank();
         bool active = work_idx < n_work_items;
         if (!active) {
@@ -287,11 +294,13 @@ namespace fast_lfs::rasterization::kernels::forward {
         primitive_mean2d[work_idx] = packed;
         primitive_conic_opacity[work_idx] = make_float4(conic, output_opacity);
         // Pad float3 color → float4 for 128-bit loads (w unused).
-        const float3 sh_color = convert_sh_to_color(
+        float3 sh_color = convert_sh_to_color(
             sh_coefficients_0, sh_coefficients_rest,
             mean3d, cam_position[0],
             primitive_idx, active_sh_bases, sh_layout_slots,
             sh_value_bounds, sh_value_n_cells, sh_value_bits);
+        if constexpr (LOG_RADIANCE)
+            sh_color = log_radiance_color(sh_color, color_max, log_color_max);
         primitive_color[work_idx] = make_float4(sh_color, 0.0f);
         primitive_depth_keys[work_idx] = depth_sort_key(depth);
         primitive_depths[work_idx] = depth;
@@ -600,7 +609,8 @@ namespace fast_lfs::rasterization::kernels::forward {
         const uint height,
         const uint grid_width,
         const int warp_cull_mode,
-        const int blend_batch_size_runtime) {
+        const int blend_batch_size_runtime,
+        const float color_max) {
         auto block = cg::this_thread_block();
         const dim3 group_index = block.group_index();
         const uint thread_rank = block.thread_rank();
@@ -707,7 +717,7 @@ namespace fast_lfs::rasterization::kernels::forward {
                     conic_opacity.z *= 0.5f;
                     collected_conic_opacity[thread_rank] = conic_opacity;
                     const float4 raw_c = primitive_color[work_idx];
-                    const float3 clamped = fminf(fmaxf(make_float3(raw_c), 0.0f), config::max_blend_color);
+                    const float3 clamped = fminf(fmaxf(make_float3(raw_c), 0.0f), color_max);
                     // log(opacity*255): skip __expf when sigma/2 is already past the
                     // alpha=1/255 contour. Dead .w slot; pairs that pass still run the
                     // exact opacity*exp test.

@@ -30,6 +30,7 @@ namespace fast_lfs::rasterization {
         float center_y;
         float near_plane;
         float far_plane;
+        ColorActivation color_activation;
     };
 
     struct ForwardContext {
@@ -102,7 +103,8 @@ namespace fast_lfs::rasterization {
         unsigned int sh_value_n_cells = 0,
         unsigned int sh_value_bits = 0, // 0=fp32, 16=q16(+bounds) or IEEE f16
         float* max_screen_share_ptr = nullptr,
-        float dilation_scale = 1.0f);
+        float dilation_scale = 1.0f,
+        ColorActivation color_activation = {});
 
     void release_forward_context(const ForwardContext& forward_ctx);
 
@@ -153,7 +155,8 @@ namespace fast_lfs::rasterization {
         const float* edge_weight_map = nullptr,
         float* edge_score_out = nullptr,
         float* impact_sum_out = nullptr,
-        float* impact_peak_out = nullptr);
+        float* impact_peak_out = nullptr,
+        ColorActivation color_activation = {}); // must match the forward's
 
     // Pre-compile all CUDA kernels to avoid JIT delays during rendering
     void warmup_kernels();

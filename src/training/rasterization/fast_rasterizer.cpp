@@ -363,7 +363,8 @@ namespace lfs::training {
         bool render_normal,
         bool render_depth,
         float dilation_scale,
-        bool update_screen_share) {
+        bool update_screen_share,
+        fast_lfs::rasterization::ColorActivation color_activation) {
         // Get camera parameters
         const int full_width = viewpoint_camera.image_width();
         const int full_height = viewpoint_camera.image_height();
@@ -525,7 +526,8 @@ namespace lfs::training {
                  gaussian_model._max_screen_share.numel() >= static_cast<size_t>(n_primitives))
                     ? gaussian_model._max_screen_share.ptr<float>()
                     : nullptr,
-                dilation_scale);
+                dilation_scale,
+                color_activation);
         } catch (const std::exception& e) {
             // Dump all input data for debugging
             dump_crash_data(
@@ -656,6 +658,7 @@ namespace lfs::training {
         ctx.near_plane = near_plane;
         ctx.far_plane = far_plane;
         ctx.mip_filter = mip_filter;
+        ctx.color_activation = color_activation;
 
         // Store tile information
         ctx.tile_x_offset = tile_x_offset;
@@ -882,7 +885,8 @@ namespace lfs::training {
             fused_extra_gradients.edge_weight_map,
             fused_extra_gradients.edge_score_out,
             fused_extra_gradients.impact_sum_out,
-            fused_extra_gradients.impact_peak_out);
+            fused_extra_gradients.impact_peak_out,
+            ctx.color_activation);
 
         ctx.mark_forward_context_released();
         for (size_t i = 0; i < captured_count; ++i)
