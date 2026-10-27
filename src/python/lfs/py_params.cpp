@@ -1111,6 +1111,26 @@ namespace lfs::python {
                 [](PyOptimizationParams&, bool v) { modify_params([v](auto& p) { p.gut = v; }); },
                 "Enable Gaussian Unscented Transform")
             .def_prop_rw(
+                "hdr",
+                [](PyOptimizationParams& self) { return self.params().hdr; },
+                [](PyOptimizationParams&, bool v) { modify_params([v](auto& p) { p.hdr = v; }); },
+                "HDR training: linear EXR input, log-radiance SH, mu-law loss")
+            .def_prop_rw(
+                "hdr_mu",
+                [](PyOptimizationParams& self) { return self.params().hdr_mu; },
+                [](PyOptimizationParams&, float v) { modify_params([v](auto& p) { p.hdr_mu = v; }); },
+                "mu of the HDR mu-law loss transform")
+            .def_prop_rw(
+                "hdr_scale",
+                [](PyOptimizationParams& self) { return self.params().hdr_scale; },
+                [](PyOptimizationParams&, float v) { modify_params([v](auto& p) { p.hdr_scale = v; }); },
+                "HDR radiance normalisation (0 = P99 of the training EXRs, measured at load)")
+            .def_prop_rw(
+                "hdr_color_max",
+                [](PyOptimizationParams& self) { return self.params().hdr_color_max; },
+                [](PyOptimizationParams&, float v) { modify_params([v](auto& p) { p.hdr_color_max = v; }); },
+                "Largest radiance a splat can emit in HDR mode")
+            .def_prop_rw(
                 "use_exposure_correction",
                 [](PyOptimizationParams& self) { return self.params().use_exposure_correction; },
                 [](PyOptimizationParams&, bool v) { modify_params([v](auto& p) { p.use_exposure_correction = v; }); },

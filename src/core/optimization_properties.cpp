@@ -1029,6 +1029,36 @@ namespace lfs::core::param {
             .locale("training_params.gut")
             .tooltip("training.tooltip.gut")
             .all_strategies()
+            .bool_prop(&OptimizationParameters::hdr,
+                       "hdr", "HDR", d.hdr,
+                       "HDR training: linear float input (EXR), log-radiance spherical harmonics, "
+                       "mu-law photometric loss, EXR eval renders. Not with exposure correction, "
+                       "bilateral grid, PPISP or GUT")
+            .flags(PROP_ADVANCED | PROP_NEEDS_RESTART)
+            .all_strategies()
+            .float_prop(&OptimizationParameters::hdr_mu,
+                        "hdr_mu", "HDR mu-law", d.hdr_mu, 1.0f, 1.0e6f,
+                        "mu of the mu-law transform applied to render and ground truth before the loss "
+                        "(y = log1p(mu*x)/log1p(mu))")
+            .precision(0)
+            .ui_step(100.0)
+            .flags(PROP_ADVANCED)
+            .all_strategies()
+            .float_prop(&OptimizationParameters::hdr_scale,
+                        "hdr_scale", "HDR scale", d.hdr_scale, 0.0f, 1.0e9f,
+                        "Radiance normalisation before the mu-law (x = v / scale); 0 = the 99th percentile "
+                        "luminance of the training EXRs, measured once at load and saved with the run")
+            .precision(4)
+            .ui_step(0.1)
+            .flags(PROP_ADVANCED)
+            .all_strategies()
+            .float_prop(&OptimizationParameters::hdr_color_max,
+                        "hdr_color_max", "HDR colour cap", d.hdr_color_max, 2.0f, 1.0e9f,
+                        "Largest radiance a splat can emit in HDR mode: c = exp(min(b, ln cap))")
+            .precision(0)
+            .ui_step(1000.0)
+            .flags(PROP_ADVANCED)
+            .all_strategies()
             .bool_prop(&OptimizationParameters::undistort,
                        "undistort", "Undistort", d.undistort,
                        "Remove lens distortion before training: each image and its mask, depth and "

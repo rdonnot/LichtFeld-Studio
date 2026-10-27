@@ -6552,7 +6552,7 @@ namespace lfs::training {
                         fused_extra_gradients.scale_reg_normalizer =
                             log_scale_reg ? train_frame_scale_ : 1.0f;
                         fused_extra_gradients.erank_reg_weight = step_params.erank_reg;
-                        fused_extra_gradients.dc_reg_weight = step_params.dc_reg;
+                        fused_extra_gradients.dc_reg_weight = step_params.hdr ? 0.0f : step_params.dc_reg;
                         fused_extra_gradients.sh_rest_reg_weight = step_params.sh_rest_reg;
                         // Fused path shares the configured opacity_reg weight between gradient and loss accumulation.
                         fused_extra_gradients.opacity_reg_weight =
@@ -6579,7 +6579,7 @@ namespace lfs::training {
                             fused_erank_reg_loss_gpu = fused_erank_reg_loss_;
                             fused_extra_gradients.erank_reg_loss_out = fused_erank_reg_loss_gpu.ptr<float>();
                         }
-                        if (step_params.dc_reg > 0.0f) {
+                        if (step_params.dc_reg > 0.0f && !step_params.hdr) {
                             if (!fused_dc_reg_loss_.is_valid())
                                 fused_dc_reg_loss_ = lfs::core::Tensor::zeros({1}, lfs::core::Device::CUDA);
                             fused_dc_reg_loss_.zero_();
