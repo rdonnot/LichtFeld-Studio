@@ -60,13 +60,24 @@ def read_rows(csv_path: str | Path) -> list[dict]:
 
 
 def baseline(
-    csv_path: str | Path, scene: str, metric: str, run_prefix: str = "baseline"
+    csv_path: str | Path, scene: str, metric: str, run_prefix: str = "baseline", iteration: int | None = None
 ) -> tuple[float, float, int]:
-    """Mean, sample std (0 when n < 2) and count of matching rows; (nan, 0, 0) if none."""
+    """Mean, sample std (0 when n < 2) and count of matching rows; (nan, 0, 0) if none.
+
+    With `iteration`, only runs that logged an `iteration` row equal to it count: a 3000-iteration smoke must
+    not be judged against 7000-iteration baselines (25.9 vs 27.6 dB is training length, not a regression)."""
+    rows = read_rows(csv_path)
+    runs_at_step = None
+    if iteration is not None:
+        runs_at_step = {
+            r["run"] for r in rows
+            if r["scene"] == scene and r["metric"] == "iteration" and int(float(r["value"])) == iteration
+        }
     vals = [
         float(r["value"])
-        for r in read_rows(csv_path)
+        for r in rows
         if r["scene"] == scene and r["metric"] == metric and r["run"].startswith(run_prefix)
+        and (runs_at_step is None or r["run"] in runs_at_step)
     ]
     if not vals:
         return float("nan"), 0.0, 0

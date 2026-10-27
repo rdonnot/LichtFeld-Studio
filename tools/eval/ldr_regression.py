@@ -82,9 +82,10 @@ def main(argv: list[str] | None = None) -> int:
         metrics["psnr_test_std"] = statistics.pstdev(psnrs)
     if "psnr" not in metrics:
         raise SystemExit("no psnr in selected metrics row")
+    metrics["iteration"] = float(step)
 
     # Baseline is read before logging so a baseline-named run does not judge itself.
-    mean, std, n = log_metrics.baseline(args.csv, args.scene, "psnr", args.baseline_prefix)
+    mean, std, n = log_metrics.baseline(args.csv, args.scene, "psnr", args.baseline_prefix, iteration=step)
     log_metrics.log_rows(args.csv, args.milestone, args.scene, args.run, metrics)
 
     desc = " ".join(f"{k}={v:.4g}" for k, v in metrics.items())
@@ -92,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{args.scene}/{args.run} step {step}: {desc} (logged, not judged)")
         return 0
     if n == 0 or math.isnan(mean):
-        print(f"{args.scene}/{args.run} step {step}: {desc}; no baseline")
+        print(f"{args.scene}/{args.run} step {step}: {desc}; no baseline at {step} iterations")
         return 0
     delta = metrics["psnr"] - mean
     budget = args.tolerance_db + std
