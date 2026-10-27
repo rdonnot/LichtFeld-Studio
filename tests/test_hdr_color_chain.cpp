@@ -60,7 +60,7 @@ TEST_F(HdrColorChainTest, MulawMatchesTorchDoubleReference) {
     for (auto& g : upstream)
         g = dist(rng);
 
-    auto input = Tensor::from_vector(v, TensorShape({3, 32, static_cast<size_t>(kN / 96)}), Device::CUDA);
+    auto input = Tensor::from_vector(v, TensorShape({4, 32, 32}), Device::CUDA);
     Tensor x_saved;
     const auto y = lfs::training::kernels::hdr_mulaw_forward(input, kScale, kMu, &x_saved);
     auto grad = Tensor::from_vector(upstream, input.shape(), Device::CUDA);
@@ -75,8 +75,10 @@ TEST_F(HdrColorChainTest, MulawMatchesTorchDoubleReference) {
     auto ty = torch::log1p(static_cast<double>(kMu) * torch::clamp_min(tv / static_cast<double>(kScale), 0.0)) /
               std::log1p(static_cast<double>(kMu));
     ty.backward(torch::tensor(std::vector<double>(upstream.begin(), upstream.end()), torch::dtype(torch::kFloat64)));
-    const auto ty_acc = ty.detach().accessor<double, 1>();
-    const auto tg_acc = tv.grad().accessor<double, 1>();
+    const auto ty_cpu = ty.detach().contiguous();
+    const auto tg_cpu = tv.grad().contiguous();
+    const auto ty_acc = ty_cpu.accessor<double, 1>();
+    const auto tg_acc = tg_cpu.accessor<double, 1>();
 
     double worst_y = 0.0, worst_g = 0.0;
     for (int i = 0; i < kN; ++i) {
