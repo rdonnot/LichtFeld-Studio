@@ -177,7 +177,18 @@ if(WIN32)
 endif()
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 12)
-    target_link_libraries(lfs_core PUBLIC stdc++exp)
+    # <stacktrace> lives in libstdc++exp.a, and its symbol names differ between GCC majors. A bare `stdc++exp`
+    # resolves against the CUDA host compiler's implicit link directories first (nvcc's /usr/bin/c++ = GCC 13 here
+    # while CXX is g++-14), so the .so picked GCC 13's archive, kept GCC 14's symbols undefined, and every test
+    # executable linking lfs_core failed (the app only links because ld skips the shared-library check there).
+    # Link the archive of the C++ compiler that compiled the objects, by path, and PUBLIC so consumers get it too.
+    execute_process(COMMAND "${CMAKE_CXX_COMPILER}" -print-file-name=libstdc++exp.a
+                    OUTPUT_VARIABLE _lfs_stdcxxexp OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(EXISTS "${_lfs_stdcxxexp}")
+        target_link_libraries(lfs_core PUBLIC "${_lfs_stdcxxexp}")
+    else()
+        target_link_libraries(lfs_core PUBLIC stdc++exp)
+    endif()
 endif()
 
 # Compiler options
