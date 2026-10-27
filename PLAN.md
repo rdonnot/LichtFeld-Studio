@@ -235,8 +235,15 @@ MRNF is stochastic, so ±0.1 dB on fresh trainings is unmeasurable; evaluation o
 `--test-every` alone evaluates nothing: `--eval` is required. Eval applies PPISP/exposure correction to the held-out
 frames ("16 from the nearest training frames") because `--exposure-correction` is on by default.
 Python suite: 4225 passed, 277 skipped (needs a 3.12 venv with pillow + cryptography; the 47 first-run failures were
-those two missing packages, not the build). C++ tests: LibTorch 2.13.0+cu129 unpacked at `external/libtorch`;
-`build/tests` needs the vcpkg `tests` feature (GTest) so it cannot reuse the main `vcpkg_installed`.
+those two missing packages, not the build). C++ tests: LibTorch 2.13.0+cu129 at `external/libtorch` (+ the cusparseLt / nvshmem libraries it links but does not
+ship, from their pip wheels); `build/tests` needs the vcpkg `tests` feature (GTest) so it cannot reuse the main
+`vcpkg_installed`. Two link bugs fixed on the way: `tensor_hardening_tests` and five more executables could not link
+because `liblfs_core.so` left GCC 14's `<stacktrace>` symbols undefined — nvcc's GCC 13 host compiler put GCC 13's
+`libstdc++exp.a` first on the link line (the app only links because ld skips the shared-library check there); the
+core now links its compiler's archive by path, PUBLIC. Result: `-L fast` without the gtest binary 13/13 green; the
+gtest binary (`lichtfeld.fast`, a 60 s ctest TIMEOUT it cannot meet here: ≈10 min with the GPU shared) passes except
+27 `Formats/Pipelined{Depth,Normal}Decode` cases + `PipelinedLoaderLedger`, which need the MipNeRF360 `bicycle`
+scene at `data/bicycle` — absent on this machine, so that is the baseline to compare against, not a regression.
 
 **Plugins.** No job API: a `threading.Thread` + `lf.ui.schedule_on_ui_thread`; progress bar, `DynamicTexture`
 preview, `lf.undo.push/transaction`, `lf.scene.load_file(path, is_dataset=True)` to hand the merged dataset to

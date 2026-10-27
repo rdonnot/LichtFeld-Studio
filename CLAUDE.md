@@ -40,7 +40,12 @@ LFS_BUILD_DIR=$PWD/build build/pytest-venv/bin/python -m pytest tests/python -q 
 # that libtorch_cuda.so links: symlink them into external/libtorch/lib/ from the pip wheels
 # nvidia-cusparselt-cu12 + nvidia-nvshmem-cu12 (installed in build/libtorch-deps), or the link fails with undefined cusparseLt*/nvshmem*
 cmake -S . -B build/tests -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON <same compiler/toolchain flags as above> && cmake --build build/tests --target lichtfeld_tests tensor_hardening_tests -j6   # ~35 min
-ctest --test-dir build/tests --output-on-failure -L fast
+# vcpkg's bundled python3.12 runs the lichtfeld.python.* ctest entries: give it pytest first
+uv pip install --python build/tests/vcpkg_installed/x64-linux/tools/python3/python3.12 --break-system-packages pytest pytest-xdist numpy pillow cryptography
+ctest --test-dir build/tests --output-on-failure -L fast -E '^lichtfeld.fast$'   # 13 tests, all green on v0.5.4.2
+ctest --test-dir build/tests -R '^lichtfeld.fast$'   # the gtest binary: a 60 s TIMEOUT property it cannot meet here (≈10 min, GPU shared);
+                                                     # run build/tests/tests/lichtfeld_tests with its --gtest_filter directly. 27 Formats/Pipelined*Decode
+                                                     # cases + PipelinedLoaderLedger need the MipNeRF360 scene at data/bicycle (TEST_DATA_DIR = <repo>/data), absent here.
 
 # smoke-train (headless; `--test-every 8` holds out every 8th image, `--eval` is what writes <out>/metrics.csv)
 ./build/LichtFeld-Studio --headless --train -d data/smoke_ldr -o out/smoke_ldr --iter 3000 --test-every 8 --eval --export ply
@@ -80,7 +85,7 @@ name restores nothing from the binary cache). Tooling (eval, synthetic data) run
   P99) against the merged EXR / the synthetic truth: `hdr_metrics.py mu-psnr`. HDR eval renders as EXR arrive with M2.
 - Python suite of the app: `build/pytest-venv` (Python 3.12 = the embedded module's ABI; pytest, pytest-xdist, numpy,
   pillow, cryptography) with the toolchain CMake on PATH (one test configures CMake): 4225 passed, 277 skipped on
-  v0.5.4.2 (2026-10-27). C++ `-L fast` baseline: see PLAN.md M0 once the LibTorch test build has run.
+  v0.5.4.2 (2026-10-27). C++: `-L fast` minus the gtest binary = 13/13; the gtest binary passes everything except the real-data loader checks that need `data/bicycle` (MipNeRF360, not on this machine).
 
 ## Code map (v0.5.4.2, read 2026-10-27; line numbers drift — grep the quoted text)
 - **Training loop / loss:** `src/training/trainer.cpp` — render → (PPISP or exposure grid) → `corrected_image.clamp_(0,1)`
