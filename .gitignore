@@ -100,3 +100,7 @@ src/rendering/rasterizer/vulkan/shader/radix_sort/*.spv
 !/tools/synth/**
 /plugins/*/.venv/
 !/plugins/**
+/plugins/**/__pycache__/
+/plugins/**/*.pyc
+/tools/**/__pycache__/
+/tools/**/*.pyc
