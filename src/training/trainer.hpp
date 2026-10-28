@@ -226,7 +226,7 @@ namespace lfs::training {
         // HDR (PLAN.md M2): the mu-law normalisation s from the training EXRs, and the log-radiance sh0 init.
         static std::expected<float, std::string> measure_hdr_scale(
             const std::vector<std::shared_ptr<lfs::core::Camera>>& cameras);
-        static void init_log_radiance_sh0(lfs::core::SplatData& model);
+        static void init_log_radiance_sh0(lfs::core::SplatData& model, float hdr_scale, float hdr_mu);
 
         // Check if trainer is initialized
         bool isInitialized() const { return initialized_.load(); }

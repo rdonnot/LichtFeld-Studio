@@ -1129,7 +1129,7 @@ namespace lfs::python {
                 "hdr_color_max",
                 [](PyOptimizationParams& self) { return self.params().hdr_color_max; },
                 [](PyOptimizationParams&, float v) { modify_params([v](auto& p) { p.hdr_color_max = v; }); },
-                "Largest radiance a splat can emit in HDR mode")
+                "Largest radiance a splat can emit in HDR mode (absolute; 0 = 1000 x hdr_scale, resolved at load)")
             .def_prop_rw(
                 "use_exposure_correction",
                 [](PyOptimizationParams& self) { return self.params().use_exposure_correction; },

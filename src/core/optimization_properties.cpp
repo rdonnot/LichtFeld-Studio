@@ -1053,8 +1053,9 @@ namespace lfs::core::param {
             .flags(PROP_ADVANCED)
             .all_strategies()
             .float_prop(&OptimizationParameters::hdr_color_max,
-                        "hdr_color_max", "HDR colour cap", d.hdr_color_max, 2.0f, 1.0e9f,
-                        "Largest radiance a splat can emit in HDR mode: c = exp(min(b, ln cap))")
+                        "hdr_color_max", "HDR colour cap", d.hdr_color_max, 0.0f, 1.0e9f,
+                        "Largest radiance a splat can emit in HDR mode, absolute: c = exp(min(b, ln cap)); "
+                        "0 = 1000 x the radiance scale, resolved at load and saved with the run")
             .precision(0)
             .ui_step(1000.0)
             .flags(PROP_ADVANCED)

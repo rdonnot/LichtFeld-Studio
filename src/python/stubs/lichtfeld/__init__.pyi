@@ -2328,7 +2328,9 @@ class OptimizationParams:
 
     @property
     def hdr_color_max(self) -> float:
-        """Largest radiance a splat can emit in HDR mode"""
+        """
+        Largest radiance a splat can emit in HDR mode (absolute; 0 = 1000 x hdr_scale, resolved at load)
+        """
 
     @hdr_color_max.setter
     def hdr_color_max(self, arg: float, /) -> None: ...

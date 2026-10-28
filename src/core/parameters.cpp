@@ -1044,8 +1044,9 @@ namespace lfs::core {
                 return std::format("hdr_mu must be positive (got {})", hdr_mu);
             if (hdr && hdr_scale < 0.f)
                 return std::format("hdr_scale must be >= 0 (0 = measured at load, got {})", hdr_scale);
-            if (hdr && !(hdr_color_max > 1.f))
-                return std::format("hdr_color_max must be > 1 (got {})", hdr_color_max);
+            if (hdr && hdr_color_max != 0.f && !(hdr_color_max > 1.f))
+                return std::format("hdr_color_max must be 0 (= 1000 * hdr_scale, resolved at load) or > 1 (got {})",
+                                   hdr_color_max);
             if (use_exposure_correction &&
                 (use_bilateral_grid || use_ppisp || ppisp_use_controller || ppisp_freeze_from_sidecar)) {
                 return "use_exposure_correction cannot be combined with use_bilateral_grid, "

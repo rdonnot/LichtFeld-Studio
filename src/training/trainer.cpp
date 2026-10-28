@@ -2860,19 +2860,28 @@ namespace lfs::training {
         return s;
     }
 
-    // HDR: sh0 proxies in [0,1] -> log radiance. In place on the model's sh0 tensor ([N, 1, 3] float32).
-    void Trainer::init_log_radiance_sh0(lfs::core::SplatData& model) {
+    // HDR: sh0 proxies p in [0,1] -> log radiance, absolute. The proxy is display-referred, so p is read as
+    // the loss domain's mu-law value and inverted the way the MRNF blob seeds are (mrnf.cpp):
+    // x = expm1(p ln(1+mu)) / mu, radiance = x * s, sh0 = (ln max(radiance, 1e-3) - 0.5) / SH_C0. A plain
+    // ln(p * s) put a mid-grey proxy at ~s/2 (1200 on smoke_hdr) and the optimiser darkened it through
+    // opacity: depth AbsRel against the sparse points 0.13 -> 0.74. In place on sh0 ([N, 1, 3] float32).
+    void Trainer::init_log_radiance_sh0(lfs::core::SplatData& model, const float hdr_scale, const float hdr_mu) {
         constexpr float kShC0 = 0.28209479177387814f;
         auto& sh0 = model.sh0();
         if (!sh0.is_valid() || sh0.numel() == 0)
             return;
+        const float s = hdr_scale > 0.0f ? hdr_scale : 1.0f;
+        const float mu = hdr_mu > 0.0f ? hdr_mu : 5000.0f;
+        const float log1p_mu = std::log1p(mu);
         auto values = sh0.to_vector();
         for (float& v : values) {
-            const float p = std::clamp(0.5f + kShC0 * v, 1e-3f, 1.0f);
-            v = (std::log(p) - 0.5f) / kShC0;
+            const float p = std::clamp(0.5f + kShC0 * v, 0.0f, 1.0f);
+            const float radiance = std::expm1(p * log1p_mu) / mu * s;
+            v = (std::log(std::max(radiance, 1e-3f)) - 0.5f) / kShC0;
         }
         sh0 = lfs::core::Tensor::from_vector(values, sh0.shape(), sh0.device());
-        LOG_INFO("HDR: {} sh0 initialised as log radiance from their LDR proxy colours", values.size());
+        LOG_INFO("HDR: {} sh0 initialised as log radiance from their LDR proxy colours (mu-law inverse, x s = {})",
+                 values.size(), s);
     }
 
     std::expected<void, std::string> Trainer::initialize(const lfs::core::param::TrainingParameters& params) {
@@ -3037,17 +3046,27 @@ namespace lfs::training {
 
             // HDR: the mu-law loss runs on x = v / s. s is the P99 luminance of (at most 16 of) the training
             // EXRs, measured once here and written back so the saved training config and a resume reuse it.
+            // The colour cap is ABSOLUTE radiance; 0 means 1000 * s, resolved here and written back too so
+            // the saved config, a resume and the PLY (M5) all carry the value the kernels used.
             if (params_.optimization.hdr && params_.optimization.hdr_scale <= 0.0f) {
                 const auto scale = measure_hdr_scale(train_dataset_->get_cameras());
                 if (!scale)
                     return std::unexpected(scale.error());
                 params_.optimization.hdr_scale = *scale;
-                LOG_INFO("HDR: radiance scale s = {} (P99 luminance of the training EXRs); mu = {}, colour cap = {}",
-                         *scale, params_.optimization.hdr_mu, params_.optimization.hdr_color_max);
+                LOG_INFO("HDR: radiance scale s = {} (P99 luminance of the training EXRs); mu = {}",
+                         *scale, params_.optimization.hdr_mu);
             } else if (params_.optimization.hdr) {
-                LOG_INFO("HDR: radiance scale s = {} (from the configuration); mu = {}, colour cap = {}",
-                         params_.optimization.hdr_scale, params_.optimization.hdr_mu,
+                LOG_INFO("HDR: radiance scale s = {} (from the configuration); mu = {}",
+                         params_.optimization.hdr_scale, params_.optimization.hdr_mu);
+            }
+            if (params_.optimization.hdr && params_.optimization.hdr_color_max <= 0.0f) {
+                params_.optimization.hdr_color_max = 1000.0f * params_.optimization.hdr_scale;
+                LOG_INFO("HDR: colour cap = {} (1000 * s, absolute radiance; saved with the run)",
                          params_.optimization.hdr_color_max);
+            } else if (params_.optimization.hdr) {
+                LOG_INFO("HDR: colour cap = {} (absolute radiance, from the configuration; {:.1f} * s)",
+                         params_.optimization.hdr_color_max,
+                         params_.optimization.hdr_color_max / params_.optimization.hdr_scale);
             }
 
             // If using Scene mode and no strategy yet, create one
@@ -3075,11 +3094,12 @@ namespace lfs::training {
                 syncTrainingSceneTopology(scene_, splat);
             }
 
-            // HDR, fresh start: the SH hold log radiance. The initial colours are LDR proxies p in [0,1]
-            // (point cloud / random / PLY), so sh0 becomes (ln(clamp(p, 1e-3, 1)) - 0.5) / SH_C0. A resumed
-            // checkpoint already stores log values.
+            // HDR, fresh start: the SH hold log radiance in ABSOLUTE units. The initial colours are LDR
+            // proxies p in [0,1] (point cloud / random / PLY): p is inverted through the mu-law and scaled by
+            // s, exactly like the MRNF blob seeds (mrnf.cpp) — a proxy white starts at the scene's P99
+            // radiance. A resumed checkpoint already stores log values.
             if (params_.optimization.hdr && current_iteration_ == 0)
-                init_log_radiance_sh0(splat);
+                init_log_radiance_sh0(splat, params_.optimization.hdr_scale, params_.optimization.hdr_mu);
 
             // Re-initialize strategy with new parameters
             strategy_->set_training_dataset(train_dataset_);
