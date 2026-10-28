@@ -183,13 +183,12 @@ other writers; the export panel shows an **HDR COLOUR** row when the selected sp
 
 ## 7. Colour management
 
-**Working space: linear sRGB / Rec.709 primaries, D65.** The merge keeps the camera JPEG's primaries (sRGB for
-every camera's JPEG; a RAW developed to a wider space is simply carried through, unlabelled), the training and
-the viewer treat the three channels as linear light in those primaries, and the bake and the viewer apply the
-piecewise sRGB OETF (`display_color.inc`, one definition for both). No EXR is tagged with chromaticities and no
-input is converted. A colour-managed path (OCIO configs, display transforms, ACEScg as the working space, tagged
-EXRs) is being added on branch `hdr-ocio`; until it lands, keep the shoot in sRGB and treat the EXRs as linear
-sRGB.
+**Working space: linear sRGB / Rec.709 primaries, D65** (`lin_srgb`), declared on every HDR PLY and EXR; the
+viewer, the bakes and the headless video can run through any OpenColorIO display / view / look instead of the
+built-in curves (`--hdr-tonemap ocio`, tone mapping "OCIO" in the panel), and a foreign linear colorspace tag
+is converted on load. The full contract — what each file carries, what to assign in Houdini / Nuke / Resolve,
+the LUT and its measured accuracy, the CLI and Python surface — is the section
+[Colour management (OpenColorIO)](#colour-management-opencolorio) below.
 
 ## 8. Testing
 

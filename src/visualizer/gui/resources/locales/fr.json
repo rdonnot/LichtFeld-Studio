@@ -1642,14 +1642,7 @@
     "colmap_no_sparse": "Aucun dossier sparse COLMAP trouvé",
     "colmap_requires_dataset": "Chargez d'abord un dataset COLMAP",
     "colmap_no_cameras": "Aucune caméra COLMAP à exporter",
-    "colmap_unavailable": "L'export COLMAP n'est pas disponible",
-    "hdr_mode": "HDR COLOUR",
-    "hdr_mode_linear": "Linear radiance (lichtfeld_hdr header; any splat tool)",
-    "hdr_mode_baked": "Baked LDR at an exposure (any viewer)",
-    "hdr_mode_log": "Internal log SH (LichtFeld only, lossless)",
-    "hdr_baked_only": "HDR model: this format holds LDR colour, so it is baked at the exposure and tone operator below.",
-    "hdr_exposure": "Exposure (EV from 1/s)",
-    "hdr_tonemap": "Tone operator"
+    "colmap_unavailable": "L'export COLMAP n'est pas disponible"
   },
   "selection_group": {
     "lock": "Verrouiller",

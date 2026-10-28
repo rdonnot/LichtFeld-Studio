@@ -8,6 +8,9 @@
 // when no LUT is active; ocio_lut_size is 0 then and the sampler is never reached).
 #define LFS_OCIO_LUT_PARAMS
 #define LFS_OCIO_LUT_FETCH(i) vec3(ocio_lut[3 * (i)], ocio_lut[3 * (i) + 1], ocio_lut[3 * (i) + 2])
+layout(set = 0, binding = 4) readonly buffer OcioLutBuffer {
+    float ocio_lut[];
+};
 #include "../../../../rendering/rasterizer/vulkan/shader/src/slang/display_color.inc"
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
@@ -44,9 +47,6 @@ layout(set = 0, binding = 1) readonly buffer PixelDepthBuffer {
 
 layout(set = 0, binding = 2, rgba8) uniform writeonly image2D out_image;
 layout(set = 0, binding = 3, r32f) uniform writeonly image2D out_depth;
-layout(set = 0, binding = 4) readonly buffer OcioLutBuffer {
-    float ocio_lut[];
-};
 
 // HDR display of EXPOSED linear radiance: the OCIO LUT when tone 7 has one, else the built-in chain.
 vec3 hdrDisplay(vec3 exposed_radiance) {
