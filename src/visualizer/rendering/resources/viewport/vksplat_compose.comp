@@ -17,11 +17,13 @@ layout(push_constant) uniform PushConstants {
     float depth_min;
     float depth_max;
     uint depth_visualization_mode;
-    float pad2;
+    // HDR fork (M4): ln(color_max / s) of the HDR model (false-colour cap), 0 for LDR.
+    float hdr_ln_cap_norm;
     float color_exposure;
     uint color_tonemapping;
     uint splat_render_profile;
-    uint color_padding;
+    // HDR fork (M4): 0 = LDR (unchanged), 1 = HDR display chain, 2 = HDR false-colour view.
+    uint hdr_mode;
 } pc;
 
 layout(set = 0, binding = 0) readonly buffer PixelStateBuffer {
@@ -114,6 +116,21 @@ void main() {
         return;
     }
 
+    if (pc.hdr_mode == 2u) {
+        // False colour: stops of the un-premultiplied splat luminance relative to the scene's white,
+        // independent of the exposure; empty pixels show the background.
+        const bool empty = alpha <= ZERO_COVERAGE_ALPHA;
+        const vec3 straight_rgb = alpha > 1e-6 ? state.rgb / alpha : vec3(0.0);
+        const float luminance = dot(max(straight_rgb, vec3(0.0)), vec3(0.2126, 0.7152, 0.0722));
+        const vec3 fc = empty ? vec3(0.0) : lfsHdrFalseColor(luminance, pc.hdr_ln_cap_norm);
+        if (pc.transparent_background != 0u) {
+            imageStore(out_image, ivec2(gid), empty ? vec4(0.0) : vec4(fc, alpha));
+        } else {
+            imageStore(out_image, ivec2(gid), vec4(mix(pc.background.rgb, fc, empty ? 0.0 : alpha), 1.0));
+        }
+        return;
+    }
+
     if (pc.transparent_background != 0u) {
         const bool empty = alpha <= ZERO_COVERAGE_ALPHA;
         if (empty) {
@@ -121,10 +138,30 @@ void main() {
             return;
         }
         vec3 straight_rgb = alpha > 1e-6 ? state.rgb / alpha : vec3(0.0);
-        if (pc.splat_render_profile == 0u) {
+        if (pc.hdr_mode == 1u) {
+            if (pc.splat_render_profile == 0u) {
+                straight_rgb = lfsDisplayHdr(straight_rgb, pc.color_tonemapping, pc.color_exposure);
+            }
+        } else if (pc.splat_render_profile == 0u) {
             straight_rgb = lfsDisplayTone(max(straight_rgb,vec3(0.0)),pc.color_tonemapping,pc.color_exposure);
         }
         imageStore(out_image, ivec2(gid), vec4(clamp(straight_rgb, vec3(0.0), vec3(1.0)), alpha));
+        return;
+    }
+
+    if (pc.hdr_mode == 1u) {
+        // HDR: the blended colour is linear normalised radiance (float storage, unclamped). Composite the
+        // display-referred background in linear light, then exposure -> tone -> sRGB OETF.
+        const vec3 background_linear = lfsSrgbEotf(clamp(pc.background.rgb, vec3(0.0), vec3(1.0)));
+        vec3 rgb;
+        if (pc.splat_render_profile == 0u) {
+            const vec3 radiance = max(state.rgb, vec3(0.0)) * pc.color_exposure + transmittance * background_linear;
+            rgb = lfsDisplayHdr(radiance, pc.color_tonemapping, 1.0);
+        } else {
+            // Standard-portal profile: the splats were displayed per splat before blending.
+            rgb = max(state.rgb, vec3(0.0)) + transmittance * pc.background.rgb;
+        }
+        imageStore(out_image, ivec2(gid), vec4(clamp(rgb,vec3(0.0),vec3(1.0)),1.0));
         return;
     }
 

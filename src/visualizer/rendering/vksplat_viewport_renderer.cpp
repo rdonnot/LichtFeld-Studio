@@ -1953,12 +1953,48 @@ namespace lfs::vis {
             float depth_min = 0.0f;
             float depth_max = 1.0f;
             std::uint32_t depth_visualization_mode = 0;
-            float pad2 = 0.0f;
+            float hdr_ln_cap_norm = 0.0f; // HDR fork (M4): ln(color_max / s), 0 for LDR
             float color_exposure = 1.0f;
             std::uint32_t color_tonemapping = 0;
             std::uint32_t splat_render_profile = 0;
-            std::uint32_t color_padding = 0;
+            std::uint32_t hdr_mode = 0; // HDR fork (M4): 0 LDR, 1 HDR display chain, 2 HDR false colour
         };
+
+        // HDR fork (PLAN.md M4). An HDR model (SplatData::HdrState: log-radiance SH, scale s, absolute cap)
+        // is shaded as radiance / s in the projection shader and displayed as radiance * 2^EV -> tone ->
+        // sRGB OETF in the compose pass; color_exposure carries 2^EV for it. LDR models (and
+        // hdr_display = false) keep the stock path and the 0.1-8 multiplier, bit for bit.
+        constexpr std::uint32_t kHdrFlagLogSh = 1u;
+        constexpr std::uint32_t kHdrFlagFalseColor = 2u;
+
+        void populateVksplatDisplayUniforms(VulkanGSRendererUniforms& uniforms,
+                                            const lfs::rendering::ViewportRenderRequest& request,
+                                            const lfs::core::SplatData& splat_data) {
+            uniforms.color_tonemapping = static_cast<std::uint32_t>(std::clamp(request.color_tonemapping, 0, 6));
+            uniforms.splat_render_profile = request.splat_render_profile == 1 ? 1u : 0u;
+            const auto& hdr = splat_data.hdr();
+            const bool hdr_active = request.hdr_display && splat_data.is_hdr() &&
+                                    std::isfinite(hdr.scale) && hdr.scale > 0.0f &&
+                                    std::isfinite(hdr.color_max) && hdr.color_max > 0.0f;
+            if (!hdr_active) {
+                uniforms.color_exposure = std::isfinite(request.color_exposure) ? std::clamp(request.color_exposure, 0.1f, 8.0f) : 1.0f;
+                uniforms.hdr_flags = 0u;
+                uniforms.hdr_log_scale = 0.0f;
+                uniforms.hdr_ln_cap_norm = 0.0f;
+                return;
+            }
+            const float ev = std::isfinite(request.hdr_exposure_ev) ? std::clamp(request.hdr_exposure_ev, -20.0f, 20.0f) : 0.0f;
+            uniforms.color_exposure = std::exp2(ev);
+            uniforms.hdr_flags = kHdrFlagLogSh | (request.hdr_false_color ? kHdrFlagFalseColor : 0u);
+            uniforms.hdr_log_scale = std::log(hdr.scale);
+            uniforms.hdr_ln_cap_norm = std::log(hdr.color_max) - std::log(hdr.scale);
+        }
+
+        std::uint32_t composeHdrMode(const VulkanGSRendererUniforms& uniforms) {
+            if ((uniforms.hdr_flags & kHdrFlagLogSh) == 0u)
+                return 0u;
+            return (uniforms.hdr_flags & kHdrFlagFalseColor) != 0u ? 2u : 1u;
+        }
 
     } // namespace
 
@@ -6237,7 +6273,13 @@ namespace lfs::vis {
             transitionToProducer(output.depth_image.image,
                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                  transfer_write);
-            const auto clear_background = !depth_view && uniforms.splat_render_profile == 0u
+            const std::uint32_t clear_hdr_mode = composeHdrMode(uniforms);
+            const auto clear_background = depth_view || clear_hdr_mode == 2u
+                                              ? background
+                                          : clear_hdr_mode == 1u && uniforms.splat_render_profile == 0u
+                                              // Same chain as the compose pass with no splat: background in linear light -> tone -> OETF.
+                                              ? lfs::rendering::lfsDisplayHdr(lfs::rendering::lfsSrgbEotf(glm::clamp(background, glm::vec3(0), glm::vec3(1))), uniforms.color_tonemapping, 1.0f)
+                                          : uniforms.splat_render_profile == 0u && clear_hdr_mode == 0u
                                               ? lfs::rendering::lfsDisplayTone(glm::max(background, glm::vec3(0)), uniforms.color_tonemapping, uniforms.color_exposure)
                                               : background;
             VkClearColorValue clear = transparent_background
@@ -6376,9 +6418,11 @@ namespace lfs::vis {
             .depth_min = depth_min,
             .depth_max = depth_max,
             .depth_visualization_mode = static_cast<std::uint32_t>(depth_visualization_mode),
+            .hdr_ln_cap_norm = uniforms.hdr_ln_cap_norm,
             .color_exposure = uniforms.color_exposure,
             .color_tonemapping = uniforms.color_tonemapping,
             .splat_render_profile = uniforms.splat_render_profile,
+            .hdr_mode = composeHdrMode(uniforms),
         };
         vkCmdPushConstants(cmd,
                            compose_->pipeline_layout,
@@ -8462,9 +8506,7 @@ namespace lfs::vis {
                                               ? 0.0f
                                               : orthographicEyeSetback(request.frame_view, splat_data, request.scene,
                                                                        false));
-            uniforms.color_exposure = std::isfinite(request.color_exposure) ? std::clamp(request.color_exposure, 0.1f, 8.0f) : 1.0f;
-            uniforms.color_tonemapping = static_cast<std::uint32_t>(std::clamp(request.color_tonemapping, 0, 6));
-            uniforms.splat_render_profile = request.splat_render_profile == 1 ? 1u : 0u;
+            populateVksplatDisplayUniforms(uniforms, request, splat_data);
             uniforms.step = static_cast<std::uint32_t>(modelTransformCount(request.scene.model_transforms));
             uniforms.sort_capacity = HIGS_DEPTH_WAVE_INSTANCES;
             if (request.depth_view || request.require_exact_depth)
@@ -9152,9 +9194,7 @@ namespace lfs::vis {
                                               ? 0.0f
                                               : orthographicEyeSetback(request.frame_view, splat_data, request.scene,
                                                                        force_input_upload));
-            uniforms.color_exposure = std::isfinite(request.color_exposure) ? std::clamp(request.color_exposure, 0.1f, 8.0f) : 1.0f;
-            uniforms.color_tonemapping = static_cast<std::uint32_t>(std::clamp(request.color_tonemapping, 0, 6));
-            uniforms.splat_render_profile = request.splat_render_profile == 1 ? 1u : 0u;
+            populateVksplatDisplayUniforms(uniforms, request, splat_data);
             uniforms.step = static_cast<std::uint32_t>(modelTransformCount(request.scene.model_transforms));
             uniforms.lod_enabled = (lod_indices_present || gpu_lod_render_active) ? 1u : 0u;
             if (lod_logical_indices_present || gpu_lod_render_active) {

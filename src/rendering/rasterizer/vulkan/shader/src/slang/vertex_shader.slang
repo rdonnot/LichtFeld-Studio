@@ -437,7 +437,10 @@ Splat_2D_Vertex project_gaussian_to_camera_model(
     bool model_transform_enabled,
     bool mip_filter,
     bool spark_rad_opacity_path,
-    bool standard_portal) {
+    bool standard_portal,
+    uint hdr_flags,
+    float hdr_log_scale,
+    float hdr_ln_cap_norm) {
     float3 xyz_vs = project_point(mean_ws, cam);
     // Reject behind-camera, non-finite, and far off-screen means. The EWA
     // projection Jacobian degenerates as the mean moves outside the frustum
@@ -457,7 +460,10 @@ Splat_2D_Vertex project_gaussian_to_camera_model(
             dir = transpose_mul_rows(r0, r1, r2, dir);
         }
     }
-    float3 rgb = compute_color_from_sh_coeffs(g.sh_coeffs, dir, active_sh);
+    // HDR fork: log-radiance SH -> normalised radiance (white = 1 at EV 0); LDR keeps the stock path.
+    float3 rgb = (hdr_flags & 1u) != 0u
+        ? compute_hdr_color_from_sh_coeffs(g.sh_coeffs, dir, active_sh, hdr_log_scale, hdr_ln_cap_norm)
+        : compute_color_from_sh_coeffs(g.sh_coeffs, dir, active_sh);
 
     float3x3 cov_ws = get_covariance_from_quat_scales(
         safe_quat_normalize(g.rotations), g.scales
@@ -501,7 +507,10 @@ Splat_2D_Vertex project_gaussian_to_camera_gut(
     StructuredBuffer<float4> model_transform_rows,
     uint model_transform_base,
     bool model_transform_enabled,
-    bool mip_filter) {
+    bool mip_filter,
+    uint hdr_flags,
+    float hdr_log_scale,
+    float hdr_ln_cap_norm) {
     float3 mean_vs = project_point(mean_ws, cam);
     if (mean_vs.z <= NEAR_CLIP || !isfinite(dot(mean_vs, mean_vs))) {
         return { float3(0.0), float3(0.0), float3(0.0), float4(0.0), 0.0 };
@@ -577,7 +586,10 @@ Splat_2D_Vertex project_gaussian_to_camera_gut(
             dir = transpose_mul_rows(r0, r1, r2, dir);
         }
     }
-    float3 rgb = compute_color_from_sh_coeffs(g.sh_coeffs, dir, active_sh);
+    // HDR fork: log-radiance SH -> normalised radiance (white = 1 at EV 0); LDR keeps the stock path.
+    float3 rgb = (hdr_flags & 1u) != 0u
+        ? compute_hdr_color_from_sh_coeffs(g.sh_coeffs, dir, active_sh, hdr_log_scale, hdr_ln_cap_norm)
+        : compute_color_from_sh_coeffs(g.sh_coeffs, dir, active_sh);
     float3 inv_cov_vs = compute_inverse(cov_vs.xyz);
     float opac = g.opacities * cov_vs.w;
     float3 xyz_vs = float3(mean2d - 0.5f, mean_vs.z);
@@ -1024,7 +1036,10 @@ void main(
         model_transform_enabled,
         // Portal GUT keeps its 0.3 dilation and raw opacity when AA is enabled.
         (uniforms.mip_filter & 1u) != 0u &&
-            (uniforms.splat_render_profile != 1u || spark_rad_opacity_path));
+            (uniforms.splat_render_profile != 1u || spark_rad_opacity_path),
+        uniforms.hdr_flags,
+        uniforms.hdr_log_scale,
+        uniforms.hdr_ln_cap_norm);
   #else
     Splat_2D_Vertex splat = project_gaussian_to_camera_model(
         gauss,
@@ -1036,7 +1051,10 @@ void main(
         model_transform_enabled,
         (uniforms.mip_filter & 1u) != 0u,
         spark_rad_opacity_path,
-        uniforms.splat_render_profile == 1u && !spark_rad_opacity_path);
+        uniforms.splat_render_profile == 1u && !spark_rad_opacity_path,
+        uniforms.hdr_flags,
+        uniforms.hdr_log_scale,
+        uniforms.hdr_ln_cap_norm);
   #endif
     if (rasterization_scale != 1.0f) {
         const float variance_scale = rasterization_scale * rasterization_scale;
@@ -1222,7 +1240,11 @@ void main(
     if (uniforms.splat_render_profile == 1u && !spark_rad_opacity_path) {
         splat.rgb = lfsPortalCompactColor(splat.rgb);
     }
-    if (uniforms.splat_render_profile == 1u && uniforms.color_tonemapping != 0u) {
+    if (uniforms.splat_render_profile == 1u && (uniforms.hdr_flags & 1u) != 0u) {
+        // HDR: the per-splat colour is linear normalised radiance; display it (exposure, tone, sRGB OETF)
+        // before blending, as the standard-portal profile blends display-referred colour.
+        splat.rgb = lfsDisplayHdr(splat.rgb, uniforms.color_tonemapping, uniforms.color_exposure);
+    } else if (uniforms.splat_render_profile == 1u && uniforms.color_tonemapping != 0u) {
         splat.rgb = lfsDisplaySplat(splat.rgb, uniforms.color_tonemapping, uniforms.color_exposure);
     }
     write_t3_float3(splat.rgb, out_idx, out_rgb);

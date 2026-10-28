@@ -873,7 +873,7 @@ float4 evaluate_splat(Splat_2D_AlphaBlend g,
         : exp(-sigma_over_2);
 
     float alpha = float(clipOpacity(g_opacity * val));
-    float3 premult_rgb = clamp(g_rgb, float3(0.0f), float3(MAX_BLEND_COLOR)) * alpha;
+    float3 premult_rgb = clamp(g_rgb, float3(0.0f), float3(g_blend_color_max)) * alpha;
 
     return float4(premult_rgb, alpha);
 }
@@ -907,7 +907,7 @@ float4 evaluate_splat_spark_rad(Splat_2D_AlphaBlend g,
         : exp(-sigma_over_2);
 
     float alpha = float(spark_rad_alpha_from_value(g_opacity, val));
-    float3 premult_rgb = clamp(g_rgb, float3(0.0f), float3(MAX_BLEND_COLOR)) * alpha;
+    float3 premult_rgb = clamp(g_rgb, float3(0.0f), float3(g_blend_color_max)) * alpha;
 
     return float4(premult_rgb, alpha);
 }
@@ -922,7 +922,7 @@ float4 evaluate_gut_splat(Splat_3D_GUT_AlphaBlend g, float3 ray_origin, float3 r
     float3 gcrod = cross(grd, gro);
     float power = -0.5f * dot(gcrod, gcrod);
     float alpha = float(clipOpacity(g.opacity * exp(power)));
-    return float4(clamp(g.rgb, float3(0.0f), float3(MAX_BLEND_COLOR)) * alpha, alpha);
+    return float4(clamp(g.rgb, float3(0.0f), float3(g_blend_color_max)) * alpha, alpha);
 }
 
 [ForceInline]
@@ -964,7 +964,7 @@ float4 evaluate_gut_splat_lod(Splat_3D_GUT_AlphaBlend g, float3 ray_origin, floa
         if (!spark_rad && profile == 1u && alpha < (1.0f / 255.0f))
             alpha = 0.0f;
     }
-    return float4(clamp(g.rgb, float3(0.0f), float3(MAX_BLEND_COLOR)) * alpha, alpha);
+    return float4(clamp(g.rgb, float3(0.0f), float3(g_blend_color_max)) * alpha, alpha);
 }
 
 [ForceInline]
@@ -1012,7 +1012,7 @@ float4 evaluate_splat_for_profile(Splat_2D_AlphaBlend g, float2 pixel, uint prof
         return evaluate_splat(g, pixel);
     float alpha = evaluate_splat_alpha_for_profile(g.xy_vs, g.inv_cov_vs_opacity.w,
                                                   g.inv_cov_vs_opacity.xyz, pixel, profile);
-    return float4(clamp(g.rgb, float3(0.0f), float3(MAX_BLEND_COLOR)) * alpha, alpha);
+    return float4(clamp(g.rgb, float3(0.0f), float3(g_blend_color_max)) * alpha, alpha);
 }
 
 [ForceInline]
@@ -1226,9 +1226,23 @@ struct Uniforms {
     float rasterization_scale;
     // Distance the orthographic eye was moved back; subtracted from every depth output.
     float depth_offset;
-    uint depth_offset_pad0;
-    uint depth_offset_pad1;
-    uint depth_offset_pad2;
+    // HDR fork (PLAN.md M4), in what was padding so the 224-byte layout is unchanged (match gs_renderer.h):
+    // hdr_flags bit 0 = the SH hold log radiance (exp before use), bit 1 = false-colour debug view;
+    // hdr_log_scale = ln s (s = the scene's P99 luminance, the viewer shows radiance / s);
+    // hdr_ln_cap_norm = ln(color_max / s), the cap of the activation and the blend clamp. All zero for LDR.
+    uint hdr_flags;
+    float hdr_log_scale;
+    float hdr_ln_cap_norm;
+}
+
+// Per-splat colour clamp before blending. LDR: the constant MAX_BLEND_COLOR, as always. HDR: the model's
+// cap in normalised radiance (color_max / s), set once per thread at the top of every raster entry point
+// from the uniforms (the blend helpers below have no access to them).
+static float g_blend_color_max = MAX_BLEND_COLOR;
+
+[ForceInline]
+float lfs_blend_color_max(Uniforms uniforms) {
+    return (uniforms.hdr_flags & 1u) != 0u ? exp(uniforms.hdr_ln_cap_norm) : MAX_BLEND_COLOR;
 }
 
 // mip_filter packs MIP filtering (bit 0), exact depth replay (bit 1),

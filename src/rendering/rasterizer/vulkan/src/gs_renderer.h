@@ -119,9 +119,11 @@ PACK_STRUCT(struct VulkanGSRendererUniforms {
     // Orthographic views move the eye back along the view axis so nothing lies behind it; depth outputs subtract
     // this distance again, so they stay measured from the viewport camera (match shader).
     float depth_offset;
-    uint32_t depth_offset_pad0;
-    uint32_t depth_offset_pad1;
-    uint32_t depth_offset_pad2;
+    // HDR fork (PLAN.md M4), in the former padding (match utils.slang Uniforms): bit 0 of hdr_flags = the SH
+    // hold log radiance, bit 1 = false-colour view; hdr_log_scale = ln s; hdr_ln_cap_norm = ln(color_max / s).
+    uint32_t hdr_flags;
+    float hdr_log_scale;
+    float hdr_ln_cap_norm;
 });
 static_assert(sizeof(VulkanGSRendererUniforms) == 224);
 static_assert(offsetof(VulkanGSRendererUniforms, shN_address) % 8 == 0);

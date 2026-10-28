@@ -129,6 +129,7 @@ void main(uint3 groupThreadID : SV_GroupThreadID,
           uint3 groupID : SV_GroupID,
           uniform Uniforms uniforms)
 {
+    g_blend_color_max = lfs_blend_color_max(uniforms);
     const uint macro_batch_idx = uniforms.wave_base + groupID.x;
     const uint pool_batch_idx = groupID.x;
     const uint thread_rank = groupThreadID.x;
@@ -194,7 +195,7 @@ void main(uint3 groupThreadID : SV_GroupThreadID,
             const uint32_t slot = uint32_t(macro_sorted_ids[range_start + i]);
             const float2 g_xy = xy_vs[slot];
             const float4 g_ico = inv_cov_vs_opacity[slot];
-            const float3 g_rgb = clamp(read_t3_float3(int32_t(slot), rgb), float3(0.0f), float3(MAX_BLEND_COLOR));
+            const float3 g_rgb = clamp(read_t3_float3(int32_t(slot), rgb), float3(0.0f), float3(g_blend_color_max));
             tile_mask = splat_macro_tile_mask(g_xy, g_ico, macro_origin);
 
           #if LFS_HIGS_FP32

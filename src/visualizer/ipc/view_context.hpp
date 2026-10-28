@@ -97,6 +97,9 @@ namespace lfs::vis {
         float color_exposure = 1.0f;
         int color_tonemapping = 0;
         int splat_render_profile = 0; // 0: Studio, 1: standard portal
+        bool hdr_display = true;
+        float hdr_exposure_ev = 0.0f;
+        bool hdr_false_color = false;
         int environment_mode = 0;
         std::string environment_map_path{
             std::string(kDefaultEnvironmentMapPath)};

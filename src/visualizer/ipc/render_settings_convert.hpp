@@ -48,6 +48,9 @@ namespace lfs::vis {
         p.color_exposure = s.color_exposure;
         p.color_tonemapping = s.color_tonemapping;
         p.splat_render_profile = s.splat_render_profile;
+        p.hdr_display = s.hdr_display;
+        p.hdr_exposure_ev = s.hdr_exposure_ev;
+        p.hdr_false_color = s.hdr_false_color;
         p.environment_mode = static_cast<int>(s.environment_mode);
         p.environment_map_path = s.environment_map_path;
         p.environment_exposure = s.environment_exposure;
@@ -146,6 +149,9 @@ namespace lfs::vis {
         s.color_exposure = p.color_exposure;
         s.color_tonemapping = p.color_tonemapping;
         s.splat_render_profile = p.splat_render_profile;
+        s.hdr_display = p.hdr_display;
+        s.hdr_exposure_ev = p.hdr_exposure_ev;
+        s.hdr_false_color = p.hdr_false_color;
         s.environment_mode = static_cast<EnvironmentBackgroundMode>(p.environment_mode);
         s.environment_map_path = p.environment_map_path;
         s.environment_exposure = p.environment_exposure;

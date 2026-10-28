@@ -51,6 +51,7 @@ layout(binding=3) RWStructuredBuffer<uint32_t> out_dispatch_args;
 void main(uint3 dispatchThreadID : SV_DispatchThreadID,
           uniform Uniforms uniforms)
 {
+    g_blend_color_max = lfs_blend_color_max(uniforms);
     uint tile_idx = dispatchThreadID.x;
     uint num_tiles = uniforms.grid_height * uniforms.grid_width;
 

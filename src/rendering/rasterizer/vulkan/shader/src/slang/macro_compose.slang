@@ -219,6 +219,7 @@ bool depth_intersects_pixels(Splat_2D_AlphaBlend g, uint2 origin, uint2 maximum,
     [numthreads(HIGS_TILE_WIDTH, HIGS_TILE_HEIGHT, 1)] void main(uint3 groupThreadID : SV_GroupThreadID,
                                                                  uint3 groupID : SV_GroupID,
                                                                  uniform Uniforms uniforms) {
+    g_blend_color_max = lfs_blend_color_max(uniforms);
     const uint2 tile_size = uint2(HIGS_TILE_WIDTH, HIGS_TILE_HEIGHT);
     const uint2 render_origin = full_frame_binning(uniforms)
         ? uint2(uniforms.render_origin_x, uniforms.render_origin_y) : uint2(0u);

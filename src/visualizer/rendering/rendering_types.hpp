@@ -325,6 +325,11 @@ namespace lfs::vis {
         float color_exposure = 1.0f;
         int color_tonemapping = 0;
         int splat_render_profile = 0; // 0: Studio, 1: standard portal
+        // HDR fork (M4): HDR models only (SplatData::is_hdr). EV on a log scale: 0 puts the scene's P99 white
+        // at 1.0 before the tone operator.
+        bool hdr_display = true;
+        float hdr_exposure_ev = 0.0f;
+        bool hdr_false_color = false;
 
         // Background
         glm::vec3 background_color = glm::vec3(0.0f, 0.0f, 0.0f);
