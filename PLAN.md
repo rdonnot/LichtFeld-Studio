@@ -273,6 +273,118 @@ Alternative input path that skips merging (avoids ghosting):
 
 **Done when:** viewer shows smooth exposure sweeps on the HDR scene with no banding, and FPS within 10% of the LDR path.
 
+### M4 — implementation notes (hdr-m4, 2026-10-28, from `hdr` at 407955cc4)
+
+**What changed (file:line on this branch).**
+- *SH → colour.* `shader/src/slang/spherical_harmonics.slang:504-545`: the 16-term sum is now `compute_sh_sum`;
+  `compute_color_from_sh_coeffs` = `max(sum + 0.5, 0)` (the same operations in the same order, so the LDR
+  SPIR-V computes exactly what it did) and `compute_hdr_color_from_sh_coeffs` = `exp(min(sum + 0.5 − ln s,
+  ln(cmax/s)))` — the viewer shades an HDR model in radiance NORMALISED by s (white = 1 at EV 0), the
+  subtraction in the log domain so the activation cap and the blend clamp agree bit for bit. `vertex_shader.slang`
+  threads `hdr_flags / hdr_log_scale / hdr_ln_cap_norm` into `project_gaussian_to_camera_model` and `_gut`
+  (`:426-470`, `:496-590`) and branches at the two forward colour sites; the differentiable
+  `project_gaussian_to_camera` (backward) is untouched. The per-splat `MAX_BLEND_COLOR` clamp (`utils.slang:876,
+  910, 925, 967, 1015`, `macro_raster.slang:197`) reads `g_blend_color_max`, a per-thread static that every raster
+  entry point sets from the uniforms (`lfs_blend_color_max`: `MAX_BLEND_COLOR` for LDR, `exp(ln(cmax/s))` = 1000 on
+  `smoke_hdr` for HDR; `alphablend_shader`, `macro_raster`, `macro_compose`, `tile_batch_shader`).
+- *Parameters.* `Uniforms` (`utils.slang:1186`, `gs_renderer.h:75`): the three `depth_offset_pad*` words became
+  `uint hdr_flags` (bit 0 log SH, bit 1 false colour), `float hdr_log_scale` (ln s), `float hdr_ln_cap_norm`
+  (ln(cmax/s)); 224 bytes unchanged. `color_exposure` carries 2^EV for an HDR model. Filled by
+  `populateVksplatDisplayUniforms` (`vksplat_viewport_renderer.cpp` ~1965) at both populate sites, from
+  `splat_data.hdr()` and the request's `hdr_display / hdr_exposure_ev / hdr_false_color`
+  (`rendering.hpp` ViewportRenderRequest → RenderSettings → RenderSettingsProxy → convert → session_state →
+  viewport_request_builder).
+- *Display chain.* `display_color.inc` (+`lfsSrgbOetf/Eotf`, `lfsDisplayHdr`, `lfsHdrFalseColor`; the same text
+  compiles as Slang, GLSL and C++ — `display_color.h` now `using std::log/log2`). `vksplat_compose.comp`: push
+  constants `pad2 → hdr_ln_cap_norm`, `color_padding → hdr_mode` (0 LDR verbatim, 1 HDR, 2 false colour); HDR
+  opaque = `radiance·2^EV + T·eotf(background)` → tone (mode 0 "none" = plain clamp, 1-6 the existing curves) →
+  sRGB OETF → RGBA8; transparent = the straight colour through the same chain; false colour = stops of the
+  un-premultiplied luminance relative to 1/s on a viridis ramp (−8…+8 EV), magenta at the cap, independent of EV.
+  Blending stays in float (pixel_state vec4, out_rgb float) and nothing clamps before the tone operator (the
+  per-splat clamp is at the model's cap, not 1). The no-splat clear colour follows the same chain
+  (`vksplat_viewport_renderer.cpp` ~6265). Standard-portal profile: `lfsDisplayHdr` per splat before blending
+  (`vertex_shader.slang` ~1232), as that profile blends display-referred colour.
+- *HdrState reaches the viewer.* `project_lifecycle.cpp` ~8705: the hydrated project model is tagged from the
+  CKPT's parameters (else the pending PRMS' active optimization) when `hdr` is set — the SCNG chunk does not carry
+  HdrState and a project shows its model without a trainer; `trainer.cpp` ~10125 re-tags after a checkpoint
+  restore; `scene.cpp` ~1333 the combined (multi-node) model inherits the first HDR input's state (mixed LDR/HDR
+  scenes are NOT supported: one activation per draw). M5 owns the PLY comments.
+- *Other colour consumers.* `rendering/hdr_display.hpp` (`hdr_point_colors`, `hdr_display_image`): point-cloud
+  previews (`rendering_manager_vulkan.cpp` ~4120, with the EV; `raster_rendering_engine.cpp` ~835, EV 0) and the
+  headless video render (`application.cpp` ~1382: `fast_rasterize(..., color_activation_for(*model))` then the
+  chain at EV 0). Left as they were, on purpose: `py_splat_data` `get_colors_rgb` (the SH-decode contract),
+  selection-by-colour (`selection_ops.cu`, `py_selection.cpp`), the octree LOD builder (averages `0.5 + C0·sh0`,
+  i.e. a geometric mean of radiance for log SH — tolerable), SPZ/SOG quantisation (M5).
+- *Controls.* `py_rendering.cpp:738`: `hdr_display` (bool, default on), `hdr_exposure_ev` (−12…+12, default 0),
+  `hdr_false_color`; `rendering.rml` shows the EV slider + false colour + HDR display in "Color & Appearance" when
+  `hdr_model` (panel: `_scene_has_hdr_model`, re-read every 0.5 s and on scene change) and hides the 0.1–8
+  multiplier then; labels/tooltips in all ten locales (English text outside de/it/pl/fr/es/nl labels).
+  `SplatData.is_hdr / hdr_scale / hdr_color_max` in Python.
+
+**Measured (RTX A5000 shared with an M3 training at 100 % GPU, Xvfb 1280×960, the app driven over MCP
+`project_open` + `editor_run`; harness: the in-app script renders a dataset camera with `lf.render_at`
+at the camera's own pose — COLMAP w2c → visualizer pose = `(FLIP·Rᵀ·FLIP, FLIP·(−RᵀT))`, FLIP = diag(1,−1,−1) —
+and its fov; `tools/eval/hdr_viewer_check.py` applies the same chain to the fastgs EXR on the CPU).**
+- *Exposure sweep* (`out/m4_sweep/`, model `m2_hdr_v3` 3000 it, s = 2421.4, cap 1000·s, 70 894 splats; views
+  pos_008 / pos_000 / pos_016 at EV −4 −2 0 +2 +4, tone "none"): the lamp is a textured unclipped disc at −4 EV
+  (frame max 169/255 at −4, 255 from −2 up), the shadows open to mean 235/255 at +4; no black splats
+  (black-pixel fraction 0 on pos_008, 4.6 % at −4 EV on pos_000 = true darks), no NaN (every pixel finite in
+  every render), no banding visible (the 8-bit output comes from a float chain; the CPU twin shows the same
+  quantisation steps). PNGs: `pos_<view>_ev±N_viewer.png` beside `_fastgs.png`, plus `pos_008_ev+0.0_fc.png`
+  (false colour: lamp green ≈ +2.8 EV, sky teal ≈ 0 EV, shadows violet, no magenta: the model is below its
+  cap), `_aces.png`, `_ldroff.png` (HDR display off = the raw log SH, mean 254/255: what the viewer showed
+  before M4).
+- *Viewer vs training rasterizer*, same cameras, same chain (radiance/s · 2^EV, clamp, sRGB OETF, round):
+  **PSNR 38.3–51.3 dB over the 15 renders** (pos_008: 51.3 / 46.9 / 42.2 / 44.0 / 40.7 dB at −4…+4; pos_000:
+  49.6 / 44.8 / 40.0 / 42.1 / 38.3; pos_016: 48.9 / 44.1 / 39.3 / 42.2 / 39.0), mean |Δ| ≤ 1.5/255,
+  saturated-pixel fractions equal to ±0.1 %. The residual is the two rasterizers (Vulkan tile blend vs fastgs),
+  not the chain: it is smallest where the image is darkest.
+- *LDR unchanged* (`out/m4_ldr_identity/`): `baseline_a` (1 115 161 splats) at three held-out cameras
+  (G_mid_0001/0017/0032, 1344×768), the pristine `../LichtFeld-HDR/build/LichtFeld-Studio` vs this build, same
+  settings: 0.0023 / 0.0069 / 0.0031 % of pixels differ, all by 1 LSB; the pristine binary against ITSELF run
+  twice: 0.0022 / 0.0107 / 0.0031 %, also 1 LSB — the Vulkan viewer is not bit-deterministic run to run (sort
+  ties), and the new build sits inside that floor. A decoded-pixel hash therefore cannot be identical for either
+  pair; the numbers above are the honest statement.
+- *CPU chain test* `tests/test_hdr_display_chain.cpp` (5 cases: activation + cap, sRGB round trip against
+  hand values 0.18 → 0.4614 / 0.5 → 0.7354, EV = stops with "none" a clamp, every tone curve = OETF(lfsDisplayTone)
+  on linear radiance, the false-colour ramp) registered as `lichtfeld.hdr_display_chain` (label fast); run
+  standalone against the tests tree's GTest (`g++-14 … libgtest.a`): 5/5 pass. The `build/tests` tree does not
+  exist in this worktree (35 min + its own vcpkg), so it was not run through ctest here.
+- *Shader compile check:* all 108 slangc variants + the GLSL compose pass recompile cleanly in the build
+  (`build-m4-inc1.log`); `tests/python/test_shader_header_target.py` passes; Python contracts touched by the UI
+  change (`test_rendering_organization`, `test_localization_contracts`, `test_rendering_panel_regressions`,
+  `test_gallery_view`): 170 passed.
+- *`ldr_reeval.py`* on the frozen `baseline_a` project with this binary (`--iter 7000 --test-every 8 --eval`):
+  "metrics: identical", "eval PNGs: 16 compared, identical" (row `M4 / m4_reeval` in `out/metrics.csv`).
+- *Frame time* (the preview path `lf.render_at` incl. the RGBA8 readback, 1280×960, 40 renders × 3 rounds
+  interleaved in ONE session so the shared GPU load hits both arms alike): HDR model `m2_hdr_v3` with HDR
+  shading **24.9 ms median** (27.5 / 24.9 / 24.8) vs the same model forced LDR (`hdr_display = false`) **25.0 ms**
+  (25.9 / 25.0 / 24.6) — within 1 %, the exp and the OETF are invisible; the LDR baseline `baseline_a`
+  (1.12 M splats, 16× more) 48.5 ms (48.5 / 48.5 / 49.7). Absolute numbers are inflated by the concurrent M3
+  training (GPU at 100 % throughout); the ratio is the measurement.
+
+**Deviations / what is owed.**
+- The viewer works in radiance / s rather than absolute radiance (the task said `exp(min(rgb, ln cmax))`): the
+  float pipeline would carry 2421-scale values through the blend clamp and the compose for nothing; dividing in
+  the log domain costs one subtraction and makes EV 0 = white without a second uniform. `color_exposure` is
+  reused for 2^EV (one uniform, no new push constant).
+- The blend clamp is a per-thread `static` in Slang set at each entry point rather than a function parameter
+  through every `evaluate_splat*` overload; LDR reads `MAX_BLEND_COLOR` into it, so the SPIR-V differs by a
+  register move, the pixels by nothing (measured above).
+- Selection overlays (`apply_selection_overlay`, saturation preview) lerp toward display-referred colours; on an
+  HDR model they land in normalised radiance at EV 0, which looks right at EV 0 and drifts with the EV. Fine for
+  a debug overlay; a display-space overlay would need the compose to know the selection — not done.
+- Mixed LDR + HDR nodes in one scene read the LDR nodes as log radiance (one activation per draw). Not done.
+- The CKPT/SCNG chunks still do not carry HdrState; the project-open hook reads it from the parameters. M5's PLY
+  comments must also set it on PLY load (`ply_loader.cpp`) or a PLY-only scene shows log values.
+- A `project.licht.autosave` (74 KB, 09:42) was left beside `../LichtFeld-HDR-m2/out/m2_hdr_v3/project.licht` by
+  the first GUI run (terminated mid-session); the project itself is untouched (mtime 00:59). It makes the next
+  `project_open` of THAT file answer `recovery_decision_pending`; the later runs used copies under
+  `out/m4_sweep/project_copy/` and `out/m4_ldr_identity/project_copy/`. Deleting it needs a human hand (refused
+  here as irreversible). `baseline_a` has no such sidecar.
+- The `build/tests` tree was not built in this worktree (35 min); the new gtest ran standalone against the tests
+  tree's GTest. The other M4 tooling (`tools/eval/hdr_viewer_check.py`) runs in `tools/` with `uv`.
+
 ---
 
 ## M5 — Export & interop
