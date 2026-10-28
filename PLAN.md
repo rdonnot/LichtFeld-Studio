@@ -755,7 +755,7 @@ reader contract is `docs/hdr.md`.
   HDR paths; upstream's six workflows are untouched.
 - Measured here (RTX A5000 shared, 2026-10-28): `tools pytest` 28 passed (incl. `test_ldr_reeval`: "metrics:
   identical", "eval PNGs: 16 compared, identical" with the M6 binary, three times during the milestone);
-  `plugin pytest` 62 passed; <<CTEST>>
+  `plugin pytest` 62 passed; `ctest -L hdr` 5/5 passed in 3.2 s on this worktree's `build/tests` (62 gtest cases: color chain 3, display chain 6, bracket stage 7, eval split 4, parameters 42); `--no-gpu --quick` runs 3/3 CPU entries and skips `test_ldr_reeval` with its reason. The script end to end: 28 s.
 
 **Fixes found while wiring (each its own commit).**
 - **`--hdr-exposure` was declared twice** on the merged `hdr`: M5's export EV (`HdrExportFlags`, declared first)
@@ -817,7 +817,7 @@ Nothing of upstream was merged into `hdr-m6`; its base is still v0.5.4.2.
 | M3 bracket training | built, Done-when **not met** | best 31.27 vs M2 32.15 dB LDR PSNR (−0.9 dB, from −1.8); μ-law vs truth 34.0 (above M2's 33.1); `exif` ≈ `learn` | the 0.9 dB (more iterations or the merge as a prior); handheld/ghosting case where it should win is unmeasured (no real capture) |
 | M4 viewer tone mapping | yes | viewer vs fastgs 38.3–51.3 dB over 15 renders; frame time within 1 % of LDR; LDR pixels within the Vulkan run-to-run floor; no banding | mixed HDR + LDR nodes; selection overlay drifts with EV; `display_color.inc` location |
 | M5 export & interop | yes | PLY round trip: log 126.3 dB, linear 73.5–74.1 dB (−0.001 dB vs GT), degree 0 exact; baked in [0, 1]; N'Brain's two readers decode both; SPZ/SOG/… refuse unless baked | export panel in a GUI; USD/NuRec as float radiance; Houdini / vk_gaussian_splatting not run here |
-| M6 polish & upstream-ability | tests + guide + gates done; **upstream sync deferred** | 28 + 62 Python tests, <<CTEST_SHORT>>; locale / io-discipline / cuda-log gates green; census 51 → 46 (all `expected-string`) | the merge of upstream master (16 conflicts, new LDR reference); 46 `expected-string`; a final `hdr-architect` review of the whole diff; splitting into PRs (plugin first) |
+| M6 polish & upstream-ability | tests + guide + gates done; **upstream sync deferred** | 28 + 62 Python tests, 5/5 ctest entries = 62 gtest cases, all green; locale / io-discipline / cuda-log gates green; census 51 → 46 (all `expected-string`) | the merge of upstream master (16 conflicts, new LDR reference); 46 `expected-string`; a final `hdr-architect` review of the whole diff; splitting into PRs (plugin first) |
 
 **The full test command** (this worktree; `build/tests` configured with `-DBUILD_TESTS=ON` and
 `-DVCPKG_INSTALLED_DIR=…/LichtFeld-HDR/build/tests/vcpkg_installed` to reuse the installed ports):
