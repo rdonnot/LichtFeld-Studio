@@ -120,7 +120,7 @@ def main(argv: list[str] | None = None) -> int:
     run(conv + [str(log_ply), str(linear_ply), "-y"], out / "convert_linear.log")
     run(conv + [str(log_ply), str(log0_ply), "-y", "--sh-degree", "0", "--hdr-export", "log"], out / "convert_log0.log")
     run(conv + [str(log0_ply), str(linear0_ply), "-y"], out / "convert_linear0.log")
-    run(conv + [str(log_ply), str(baked_ply), "-y", "--hdr-export", "baked", "--hdr-exposure", str(args.exposure),
+    run(conv + [str(log_ply), str(baked_ply), "-y", "--hdr-export", "baked", "--hdr-export-exposure", str(args.exposure),
                 "--hdr-tonemap", args.tonemap], out / "convert_baked.log")
     run(conv + [str(linear_ply), str(back_ply), "-y", "--hdr-export", "log"], out / "convert_back.log")
     report["files"] = {p.name: {"bytes": p.stat().st_size, "hdr": hdr_ply.read_ply(p)[1]}

@@ -3322,7 +3322,7 @@ namespace lfs::training {
                 return std::unexpected(
                     "The initial model holds HDR log-radiance SH (a lichtfeld_hdr PLY) but --hdr is off: "
                     "pass --hdr (its s and cap are taken from the file), or convert it first "
-                    "(LichtFeld-Studio convert in.ply out.ply --hdr-export baked --hdr-exposure 0)");
+                    "(LichtFeld-Studio convert in.ply out.ply --hdr-export baked --hdr-export-exposure 0)");
             // The model carries how its SH are to be read (log radiance, s, cap) for every consumer that is
             // not the trainer: the viewer, the exporters, the video render (SplatData::HdrState).
             if (params_.optimization.hdr)
