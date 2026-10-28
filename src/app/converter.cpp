@@ -124,37 +124,40 @@ namespace lfs::app {
             const int spz_version,
             const core::ProvenanceStamp& provenance,
             lfs::io::SsogSaveOptions ssog,
-            const lfs::io::ExportProgressCallback& progress = nullptr) {
+            const lfs::io::ExportProgressCallback& progress = nullptr,
+            const core::hdr::ExportOptions& hdr = {}) {
             switch (format) {
             case param::OutputFormat::PLY:
-                return lfs::io::save_ply(splat, {.output_path = output, .binary = true, .progress_callback = progress, .provenance = provenance});
+                return lfs::io::save_ply(splat, {.output_path = output, .binary = true, .progress_callback = progress, .provenance = provenance, .hdr = hdr});
             case param::OutputFormat::SSOG:
                 ssog.output_path = output;
                 ssog.kmeans_iterations = sog_iterations;
                 ssog.provenance = provenance;
                 ssog.progress_callback = progress;
+                ssog.hdr = hdr;
                 return lfs::io::save_ssog(splat, ssog);
             case param::OutputFormat::SOG:
-                return lfs::io::save_sog(splat, {.output_path = output, .kmeans_iterations = sog_iterations, .progress_callback = progress, .provenance = provenance});
+                return lfs::io::save_sog(splat, {.output_path = output, .kmeans_iterations = sog_iterations, .progress_callback = progress, .provenance = provenance, .hdr = hdr});
             case param::OutputFormat::SPZ:
-                return lfs::io::save_spz(splat, {.output_path = output, .version = spz_version, .progress_callback = progress, .provenance = provenance});
+                return lfs::io::save_spz(splat, {.output_path = output, .version = spz_version, .progress_callback = progress, .provenance = provenance, .hdr = hdr});
             case param::OutputFormat::GLB:
-                return lfs::io::save_spz(splat, {.output_path = output, .progress_callback = progress, .provenance = provenance, .glb = true});
+                return lfs::io::save_spz(splat, {.output_path = output, .progress_callback = progress, .provenance = provenance, .glb = true, .hdr = hdr});
             case param::OutputFormat::HTML:
-                return lfs::io::export_html(splat, {.output_path = output, .kmeans_iterations = sog_iterations, .progress_callback = progress, .provenance = provenance});
+                return lfs::io::export_html(splat, {.output_path = output, .kmeans_iterations = sog_iterations, .progress_callback = progress, .provenance = provenance, .hdr = hdr});
             case param::OutputFormat::USD:
             case param::OutputFormat::USDA:
             case param::OutputFormat::USDC:
-                return lfs::io::save_usd(splat, {.output_path = output, .progress_callback = progress, .provenance = provenance});
+                return lfs::io::save_usd(splat, {.output_path = output, .progress_callback = progress, .provenance = provenance, .hdr = hdr});
             case param::OutputFormat::RAD:
                 return lfs::io::save_rad(splat, {
                                                     .output_path = output,
                                                     .chunk_size = radChunkSizeForMode(rad_export_mode),
                                                     .progress_callback = progress,
                                                     .provenance = provenance,
+                                                    .hdr = hdr,
                                                 });
             }
-            return lfs::io::save_ply(splat, {.output_path = output, .binary = true, .progress_callback = progress, .provenance = provenance});
+            return lfs::io::save_ply(splat, {.output_path = output, .binary = true, .progress_callback = progress, .provenance = provenance, .hdr = hdr});
         }
 
         bool isPlyExtension(const std::filesystem::path& path) {
@@ -289,11 +292,22 @@ namespace lfs::app {
                 }
 
                 std::optional<core::CheckpointSplatDataLoadResult> loaded;
+                std::optional<core::CheckpointParametersLoadResult> loaded_params;
                 auto visited = checkpoint->visit_stream(
                     [&](std::istream& stream, const std::uint64_t bytes) -> lfs::Result<void> {
                         loaded = core::load_checkpoint_splat_data(stream, bytes, {});
                         return {};
                     });
+                if (visited) {
+                    // HDR state (docs/hdr.md): the checkpoint's parameters say how the SH are read.
+                    (void)checkpoint->visit_stream(
+                        [&](std::istream& stream, const std::uint64_t bytes) -> lfs::Result<void> {
+                            loaded_params = core::load_checkpoint_params(stream, bytes);
+                            return {};
+                        });
+                    if (loaded && *loaded && loaded_params && *loaded_params)
+                        core::apply_checkpoint_hdr_state(**loaded_params, **loaded);
+                }
                 if (!visited) {
                     LOG_ERROR("Failed to stream project checkpoint: {}",
                               lfs::format_for_developer(visited.error()));
@@ -455,7 +469,24 @@ namespace lfs::app {
             if (params.format == param::OutputFormat::RAD && isPlyExtension(input) &&
                 (tiled || params.lod_builder != param::LodBuilder::BHATT ||
                  shouldStreamLodConvert(input))) {
-                return streamLodConvertFile(input, output, params);
+                // The streaming parser reads f_dc as colour and ignores the header: an HDR PLY (docs/hdr.md)
+                // must go through the in-memory path, where the writers' gate bakes or refuses it.
+                if (lfs::io::is_hdr_ply(input)) {
+                    if (params.hdr_export.mode != core::hdr::ExportMode::BakedLdr) {
+                        const auto message = core::hdr::refusal_message("RAD");
+                        LOG_ERROR("{}", message);
+                        std::println(stderr, "  Error: {}", message);
+                        return false;
+                    }
+                    if (tiled) {
+                        LOG_ERROR("--tiles is not available for an HDR PLY: bake it to an LDR PLY first");
+                        std::println(stderr, "  Error: --tiles is not available for an HDR PLY (bake it to an LDR PLY first)");
+                        return false;
+                    }
+                    std::println("  HDR PLY: baking in memory before the RAD build (the streaming converter reads colour only)");
+                } else {
+                    return streamLodConvertFile(input, output, params);
+                }
             }
 
             std::println("Converting: {} -> {}", path_to_utf8(input), path_to_utf8(output));
@@ -484,6 +515,9 @@ namespace lfs::app {
                 splat = std::move(*splat_ptr);
             }
             std::println("  Loaded {} gaussians, SH degree {}", splat->size(), splat->get_max_sh_degree());
+            if (splat->is_hdr())
+                std::println("  HDR model (log radiance, s = {}, cap = {}): --hdr-export {}", splat->hdr().scale,
+                             splat->hdr().color_max, core::hdr::export_mode_name(params.hdr_export.mode));
 
             if (params.sh_degree >= 0 && params.sh_degree != splat->get_max_sh_degree()) {
                 truncateSHDegree(*splat, params.sh_degree);
@@ -497,7 +531,8 @@ namespace lfs::app {
                 make_convert_provenance(params.include_provenance, input), ssogOptions(params),
                 [&bar](const float progress, const std::string& stage) {
                     return bar.report(progress, stage);
-                });
+                },
+                params.hdr_export);
 
             if (!result) {
                 bar.abort();

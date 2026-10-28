@@ -101,6 +101,11 @@ class ExportPanel(Panel):
         self._ssog_bundle = True
         self._ssog_settings = SSOG_DEFAULTS.copy()
         self._spz_version = 4  # SPZ container: 4 (zstd) or 3 (legacy gzip)
+        # HDR models (docs/hdr.md): PLY offers linear radiance / baked LDR / internal log; every other
+        # format holds LDR colour, so an HDR model is baked at the exposure + tone operator below.
+        self._hdr_mode = "linear"
+        self._hdr_exposure = 0.0
+        self._hdr_tone = "aces"
         self._selection_seeded = False
         self._handle = None
         self._last_node_key = None
@@ -169,6 +174,13 @@ class ExportPanel(Panel):
             model.bind(field, lambda f=field: str(self._ssog_settings[f]),
                        lambda value, f=field: self._set_ssog_setting(f, value))
         model.bind_func("show_spz_version", lambda: self._format == ExportFormat.SPZ)
+        model.bind_func("show_hdr_settings", self._selection_has_hdr)
+        model.bind_func("show_hdr_mode", lambda: self._format == ExportFormat.PLY)
+        model.bind_func("show_hdr_baked_note", lambda: self._format != ExportFormat.PLY)
+        model.bind_func("show_hdr_bake_settings", self._hdr_bakes)
+        model.bind("hdr_mode", lambda: self._hdr_mode, self._set_hdr_mode)
+        model.bind("hdr_exposure", lambda: f"{self._hdr_exposure:g}", self._set_hdr_exposure)
+        model.bind("hdr_tone", lambda: self._hdr_tone, self._set_hdr_tone)
         model.bind_func("export_error_text", self._get_export_error_text)
         model.bind_func("can_export", self._can_export)
         model.bind_func("progress_value", lambda: self._progress_value)
@@ -331,6 +343,57 @@ class ExportPanel(Panel):
             return
         self._spz_version = version
         self._dirty_model("spz_version", "show_include_provenance")
+
+    # ── HDR ───────────────────────────────────────────────────
+
+    def _selection_has_hdr(self):
+        """True when a selected splat holds log radiance (an --hdr model or a lichtfeld_hdr PLY)."""
+        if self._format == ExportFormat.COLMAP:
+            return False
+        try:
+            for node in self._scene_nodes():
+                if node.name not in self._selected_nodes or not self._is_exportable_splat(node):
+                    continue
+                splat = node.splat_data()
+                if splat is not None and bool(getattr(splat, "is_hdr", False)):
+                    return True
+        except Exception:
+            return False
+        return False
+
+    def _hdr_export_mode(self):
+        """What lf.export_scene receives: PLY keeps the user's choice, every other format bakes."""
+        if self._format == ExportFormat.PLY:
+            return self._hdr_mode
+        return "baked"
+
+    def _hdr_bakes(self):
+        return self._hdr_export_mode() == "baked"
+
+    def _set_hdr_mode(self, value):
+        value = str(value)
+        if value not in ("linear", "baked", "log") or value == self._hdr_mode:
+            return
+        self._hdr_mode = value
+        self._dirty_model("hdr_mode", "show_hdr_bake_settings")
+
+    def _set_hdr_exposure(self, value):
+        try:
+            ev = float(value)
+        except (ValueError, TypeError):
+            return
+        ev = max(-30.0, min(30.0, ev))
+        if ev == self._hdr_exposure:
+            return
+        self._hdr_exposure = ev
+        self._dirty_model("hdr_exposure")
+
+    def _set_hdr_tone(self, value):
+        value = str(value)
+        if value not in ("none", "linear", "filmic", "hejl", "aces", "aces2", "neutral") or value == self._hdr_tone:
+            return
+        self._hdr_tone = value
+        self._dirty_model("hdr_tone")
 
     def _get_scrub_value(self, prop):
         del prop
@@ -1043,6 +1106,9 @@ class ExportPanel(Panel):
                     spz_version=self._spz_version,
                     include_provenance=self._include_provenance,
                     **self._ssog_settings,
+                    hdr=self._hdr_export_mode(),
+                    hdr_exposure_ev=self._hdr_exposure,
+                    hdr_tonemap=self._hdr_tone,
                 )
             finally:
                 self._request_reactive_update()

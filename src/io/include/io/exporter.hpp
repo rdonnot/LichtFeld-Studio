@@ -5,6 +5,7 @@
 #pragma once
 
 #include "core/export.hpp"
+#include "core/hdr_export_options.hpp"
 #include "core/point_cloud.hpp"
 #include "core/provenance.hpp"
 #include "core/splat_data.hpp"
@@ -50,6 +51,12 @@ namespace lfs::io {
         // Additional per-vertex float properties appended after the built-in PLY schema.
         std::vector<PlyAttributeBlock> extra_attributes = {};
         std::optional<core::ProvenanceStamp> provenance{}; // always written to the format's metadata slot; caller chooses full vs minimal, writers fall back to minimal
+        // HDR models (SplatData::is_hdr()): Auto/LinearRadiance writes linear-radiance SH with the
+        // `lichtfeld_hdr linear` header, BakedLdr a display-referred LDR at an exposure (no HDR header),
+        // LogInternal the internal log SH (`lichtfeld_hdr log`). Ignored for LDR models. See docs/hdr.md.
+        core::hdr::ExportOptions hdr{};
+        // Extra `comment <text>` header lines (one per entry, no newlines), after the provenance.
+        std::vector<std::string> comments{};
     };
 
     /**
@@ -72,6 +79,8 @@ namespace lfs::io {
         bool use_gpu = true;
         ExportProgressCallback progress_callback = nullptr;
         std::optional<core::ProvenanceStamp> provenance{}; // always written to the format's metadata slot; caller chooses full vs minimal, writers fall back to minimal
+        // HDR models: BakedLdr bakes to LDR at hdr.exposure_ev / hdr.tone before writing; any other mode refuses.
+        core::hdr::ExportOptions hdr{};
     };
 
     struct SsogSaveOptions {
@@ -85,6 +94,8 @@ namespace lfs::io {
         bool use_gpu = true;
         ExportProgressCallback progress_callback = nullptr;
         std::optional<core::ProvenanceStamp> provenance{};
+        // HDR models: BakedLdr bakes to LDR at hdr.exposure_ev / hdr.tone before writing; any other mode refuses.
+        core::hdr::ExportOptions hdr{};
 
         [[nodiscard]] bool validate() const {
             return lod_levels >= 1 && lod_levels <= 8 &&
@@ -126,6 +137,8 @@ namespace lfs::io {
         ExportProgressCallback progress_callback = nullptr;
         std::optional<core::ProvenanceStamp> provenance{}; // always written to the format's metadata slot; caller chooses full vs minimal, writers fall back to minimal
         std::optional<glm::vec3> background_color{};
+        // HDR models: BakedLdr bakes to LDR at hdr.exposure_ev / hdr.tone before writing; any other mode refuses.
+        core::hdr::ExportOptions hdr{};
     };
 
     /**
@@ -147,6 +160,8 @@ namespace lfs::io {
         ExportProgressCallback progress_callback = nullptr;
         std::optional<core::ProvenanceStamp> provenance{}; // always written to the format's metadata slot; caller chooses full vs minimal, writers fall back to minimal
         bool glb = false;                                  // wrap an SPZ v3 payload in a glTF binary (KHR_gaussian_splatting_compression_spz_2)
+        // HDR models: BakedLdr bakes to LDR at hdr.exposure_ev / hdr.tone before writing; any other mode refuses.
+        core::hdr::ExportOptions hdr{};
     };
 
     /**
@@ -163,6 +178,8 @@ namespace lfs::io {
         std::filesystem::path output_path;
         ExportProgressCallback progress_callback = nullptr;
         std::optional<core::ProvenanceStamp> provenance{}; // always written to the format's metadata slot; caller chooses full vs minimal, writers fall back to minimal
+        // HDR models: BakedLdr bakes to LDR at hdr.exposure_ev / hdr.tone before writing; any other mode refuses.
+        core::hdr::ExportOptions hdr{};
     };
 
     /**
@@ -179,6 +196,8 @@ namespace lfs::io {
         std::filesystem::path output_path;
         ExportProgressCallback progress_callback = nullptr;
         std::optional<core::ProvenanceStamp> provenance{}; // always written to the format's metadata slot; caller chooses full vs minimal, writers fall back to minimal
+        // HDR models: BakedLdr bakes to LDR at hdr.exposure_ev / hdr.tone before writing; any other mode refuses.
+        core::hdr::ExportOptions hdr{};
     };
 
     /**
@@ -202,6 +221,8 @@ namespace lfs::io {
         std::uint32_t chunk_size = kRadStreamableChunkSplats; // RAD splats per file chunk
         ExportProgressCallback progress_callback = nullptr;   // Progress callback
         std::optional<core::ProvenanceStamp> provenance{};    // always written to the format's metadata slot; caller chooses full vs minimal, writers fall back to minimal
+        // HDR models: BakedLdr bakes to LDR at hdr.exposure_ev / hdr.tone before writing; any other mode refuses.
+        core::hdr::ExportOptions hdr{};
     };
 
     /**

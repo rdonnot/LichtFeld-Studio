@@ -219,6 +219,8 @@ namespace lfs::io {
     /// Check if PLY contains Gaussian splat properties (opacity, scaling, rotation)
     /// Returns false for simple point clouds (xyz + colors only)
     LFS_IO_API bool is_gaussian_splat_ply(const std::filesystem::path& filepath);
+    // True when the PLY header carries `comment lichtfeld_hdr linear|log` (docs/hdr.md); header read only.
+    LFS_IO_API bool is_hdr_ply(const std::filesystem::path& filepath);
 
     /// Check if the loader reads this file as a triangle mesh: a mesh format, a PLY with faces,
     /// or a GLB without splat data

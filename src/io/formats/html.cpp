@@ -11,6 +11,7 @@
 #include "core/provenance.hpp"
 #include "core/splat_data_transform.hpp"
 #include "io/atomic_output.hpp"
+#include "io/hdr_export.hpp"
 #include "io/error.hpp"
 #include "sogs.hpp"
 #include <glm/common.hpp>
@@ -275,8 +276,15 @@ namespace lfs::io {
 
     } // anonymous namespace
 
-    Result<void> export_html(const SplatData& splat_data, const HtmlExportOptions& options_in) {
+    Result<void> export_html(const SplatData& splat_data_in, const HtmlExportOptions& options_in) {
         HtmlExportOptions options = options_in;
+
+        // HDR models (PLAN.md M5): HTML viewer quantises colour, so an HDR model is baked to LDR or refused.
+        std::optional<SplatData> hdr_baked;
+        const auto hdr_source = hdr_source_for_ldr_writer(splat_data_in, options.hdr, hdr_baked, "HTML viewer", options.output_path);
+        if (!hdr_source)
+            return std::unexpected(hdr_source.error());
+        const SplatData& splat_data = **hdr_source;
         if (!options.provenance) {
             options.provenance = core::make_minimal_provenance_stamp();
         }

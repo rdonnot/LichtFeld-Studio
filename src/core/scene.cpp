@@ -5194,7 +5194,22 @@ namespace lfs::core {
             return sh_degree_limit < 0 ? model.get_max_sh_degree()
                                        : std::min({sh_degree_limit, model.get_active_sh_degree(), model.get_max_sh_degree()});
         };
-        const auto limit_degree = [sh_degree_limit, &storage_degree](std::unique_ptr<lfs::core::SplatData> result) {
+        // HDR (M5): a merge of HDR models keeps the first one's state (log radiance, s, cap) so the exporters
+        // still know how to read the SH. A mixed LDR/HDR merge has no single reading of the SH and is refused
+        // (nullptr, like the other impossible merges) rather than written with half its colours wrong.
+        const bool any_hdr = std::any_of(splats.begin(), splats.end(), [](const auto& e) { return e.first->is_hdr(); });
+        const bool all_hdr = std::all_of(splats.begin(), splats.end(), [](const auto& e) { return e.first->is_hdr(); });
+        if (any_hdr && !all_hdr) {
+            LOG_ERROR("Cannot merge HDR (log radiance) and LDR models in one export: bake the HDR model to LDR first "
+                      "(export it as a baked PLY) or export the models separately");
+            return nullptr;
+        }
+        const auto carry_hdr = [&splats, all_hdr](std::unique_ptr<lfs::core::SplatData> result) {
+            if (result && all_hdr)
+                result->set_hdr(splats.front().first->hdr());
+            return result;
+        };
+        const auto limit_degree = [sh_degree_limit, &storage_degree, &carry_hdr](std::unique_ptr<lfs::core::SplatData> result) {
             if (result && sh_degree_limit >= 0) {
                 // Match effectiveRenderShDegree: dormant stored bands must not
                 // contribute to an export of the current rendered appearance.
@@ -5202,7 +5217,7 @@ namespace lfs::core {
                 if (result->get_max_sh_degree() > effective)
                     result->set_sh_degree(effective);
             }
-            return result;
+            return carry_hdr(std::move(result));
         };
 
         int max_sh = 0;
@@ -5355,7 +5370,7 @@ namespace lfs::core {
                     return limit_degree(std::move(result));
                 }
 
-                return clone_filtered_swizzled(*src);
+                return carry_hdr(clone_filtered_swizzled(*src));
             }
 
             size_t total_visible = 0;

@@ -13,6 +13,8 @@
 #include "core/event_bridge/command_center_bridge.hpp"
 #include "core/event_bridge/scoped_handler.hpp"
 #include "core/events.hpp"
+#include "core/hdr_sh.hpp"
+#include "core/image_io.hpp"
 #include "core/image_loader.hpp"
 #include "core/legacy_settings_migration.hpp"
 #include "core/logger.hpp"
@@ -1310,6 +1312,11 @@ namespace lfs::app {
                 LOG_ERROR("Loaded scene has no Gaussians: {}", core::path_to_utf8(cfg.load_path));
                 return 1;
             }
+            if (model->is_hdr())
+                LOG_INFO("HDR scene (s = {}, cap = {}): video at {:+.2f} EV, tone {}{}", model->hdr().scale,
+                         model->hdr().color_max, cfg.exposure_ev,
+                         core::hdr::tone_operator_name(static_cast<core::hdr::ToneOperator>(cfg.tone)),
+                         cfg.exr_dir.empty() ? "" : "; linear EXR frames beside it");
 
             lfs::sequencer::Timeline timeline;
             if (!timeline.loadFromJson(core::path_to_utf8(cfg.camera_path)) || timeline.empty()) {
@@ -1379,13 +1386,28 @@ namespace lfs::app {
                     cfg.width, cfg.height,
                     frame);
 
-                auto render_output = training::fast_rasterize(camera, *model, background);
+                // HDR scenes (docs/hdr.md): the SH are log radiance, so the rasterizer gets the model's
+                // activation, the EXR (when asked for) keeps the linear radiance, and the video is tone-mapped
+                // at --render-exposure through --render-tonemap, like the viewer.
+                auto render_output = training::fast_rasterize(camera, *model, background, false, {}, false, 1.0f,
+                                                              training::color_activation_for(*model));
                 auto image = render_output.image;
                 if (image.dtype() != core::DataType::Float32) {
                     image = image.to(core::DataType::Float32);
                 }
                 if (image.device() != core::Device::CUDA) {
                     image = image.cuda();
+                }
+                if (!cfg.exr_dir.empty()) {
+                    std::error_code ec;
+                    core::native_fs::create_directories(cfg.exr_dir, ec);
+                    const auto exr_path = cfg.exr_dir / std::format("frame_{:06d}.exr", frame);
+                    if (!core::save_image_exr(exr_path, image))
+                        LOG_WARN("Could not write {}", core::path_to_utf8(exr_path));
+                }
+                if (model->is_hdr()) {
+                    image = core::hdr::display_image(image, model->hdr(), cfg.exposure_ev,
+                                                     static_cast<core::hdr::ToneOperator>(cfg.tone));
                 }
                 auto image_hwc = image.permute({1, 2, 0}).contiguous();
 

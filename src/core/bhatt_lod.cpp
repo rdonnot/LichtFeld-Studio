@@ -1137,6 +1137,8 @@ namespace lfs::core {
                 return std::unexpected("build_bhatt_lod: cancelled by user");
             }
 
+            // HDR: interior nodes average LOG radiance (geometric mean); the state travels with the tree.
+            result->set_hdr(input.hdr());
             return result;
         } catch (const std::exception& e) {
             LOG_ERROR("build_bhatt_lod failed: {}", e.what());

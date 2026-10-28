@@ -5855,6 +5855,8 @@ namespace lfs::io::project {
                         }
                         materialized.emplace(
                             std::move(*model));
+                        if (checkpoint_params)
+                            lfs::core::apply_checkpoint_hdr_state(*checkpoint_params, *materialized);
                         return {};
                     },
                     &ckpt_retirement);

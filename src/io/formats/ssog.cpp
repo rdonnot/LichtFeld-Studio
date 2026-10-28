@@ -7,9 +7,11 @@
 #include "core/path_utils.hpp"
 #include "formats/archive_member_names.hpp"
 #include "io/atomic_output.hpp"
+#include "io/hdr_export.hpp"
 #include "io/splat_decimate.hpp"
 #include "sogs.hpp"
 #include "ssog_morton.hpp"
+#include <optional>
 #include <algorithm>
 #include <archive.h>
 #include <archive_entry.h>
@@ -618,7 +620,14 @@ namespace lfs::io {
         } catch (const std::exception& e) { return make_error(ErrorCode::DECODING_FAILED, std::string("Failed to load SSOG: ") + e.what(), p); }
     }
 
-    Result<void> save_ssog(const SplatData& input, const SsogSaveOptions& o) {
+    Result<void> save_ssog(const SplatData& input_in, const SsogSaveOptions& o) {
+        // HDR models (PLAN.md M5): SSOG quantises colour, so an HDR model is baked to LDR or refused.
+        std::optional<SplatData> hdr_baked;
+        const auto hdr_source = hdr_source_for_ldr_writer(input_in, o.hdr, hdr_baked, "SSOG", o.output_path);
+        if (!hdr_source)
+            return std::unexpected(hdr_source.error());
+        const SplatData& input = **hdr_source;
+
         try {
             const auto started = Clock::now();
             if (o.output_path.empty() || !o.validate())

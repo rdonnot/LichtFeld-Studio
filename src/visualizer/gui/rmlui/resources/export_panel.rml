@@ -86,6 +86,39 @@
         </div>
       </div>
 
+      <!-- HDR models (docs/hdr.md): shown when a selected splat holds log radiance -->
+      <div class="ep-section" data-if="show_hdr_settings">
+        <div class="setting-row setting-row--aligned" data-if="show_hdr_mode">
+          <span class="setting-row__label-col">@tr:export_dialog.hdr_mode</span>
+          <div class="setting-row__control-col setting-row__control-col--fill">
+            <select data-value="hdr_mode">
+              <option value="linear">@tr:export_dialog.hdr_mode_linear</option>
+              <option value="baked">@tr:export_dialog.hdr_mode_baked</option>
+              <option value="log">@tr:export_dialog.hdr_mode_log</option>
+            </select>
+          </div>
+        </div>
+        <span class="ep-model-count" data-if="show_hdr_baked_note">@tr:export_dialog.hdr_baked_only</span>
+        <div class="setting-row setting-row--aligned" data-if="show_hdr_bake_settings">
+          <span class="setting-row__label-col">@tr:export_dialog.hdr_exposure</span>
+          <div class="setting-row__control-col setting-row__control-col--fill"><input type="text" data-value="hdr_exposure" /></div>
+        </div>
+        <div class="setting-row setting-row--aligned" data-if="show_hdr_bake_settings">
+          <span class="setting-row__label-col">@tr:export_dialog.hdr_tonemap</span>
+          <div class="setting-row__control-col setting-row__control-col--fill">
+            <select data-value="hdr_tone">
+              <option value="none">none</option>
+              <option value="linear">linear</option>
+              <option value="filmic">filmic</option>
+              <option value="hejl">hejl</option>
+              <option value="aces">aces</option>
+              <option value="aces2">aces2</option>
+              <option value="neutral">neutral</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
       <!-- SSOG settings -->
       <div class="ep-section" data-if="show_ssog_settings">
         <div class="setting-row setting-row--aligned">

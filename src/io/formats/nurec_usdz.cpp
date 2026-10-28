@@ -18,6 +18,7 @@
 #include "formats/archive_member_names.hpp"
 #include "formats/usd_flat/half.hpp"
 #include "io/atomic_output.hpp"
+#include "io/hdr_export.hpp"
 #include "io/error.hpp"
 #include "io/exporter.hpp"
 #include <archive.h>
@@ -812,8 +813,15 @@ namespace lfs::io {
         return build_splat_from_payload(*payload);
     }
 
-    Result<void> save_nurec_usdz(const SplatData& splat_data, const NurecUsdzSaveOptions& options_in) {
+    Result<void> save_nurec_usdz(const SplatData& splat_data_in, const NurecUsdzSaveOptions& options_in) {
         NurecUsdzSaveOptions options = options_in;
+
+        // HDR models (PLAN.md M5): NuRec USDZ quantises colour, so an HDR model is baked to LDR or refused.
+        std::optional<SplatData> hdr_baked;
+        const auto hdr_source = hdr_source_for_ldr_writer(splat_data_in, options.hdr, hdr_baked, "NuRec USDZ", options.output_path);
+        if (!hdr_source)
+            return std::unexpected(hdr_source.error());
+        const SplatData& splat_data = **hdr_source;
         if (!options.provenance) {
             options.provenance = core::make_minimal_provenance_stamp();
         }

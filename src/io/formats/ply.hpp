@@ -23,6 +23,7 @@ namespace lfs::io {
 
     // Check if PLY contains Gaussian splat properties (opacity, scaling, rotation)
     bool is_gaussian_splat_ply(const std::filesystem::path& filepath);
+    bool is_hdr_ply(const std::filesystem::path& filepath);
 
     // Load PLY as Gaussian splat (with opacity, scaling, rotation, SH). Internal
     // Result end to end (Section 5.4); PLYLoader adapts to the legacy io::Result

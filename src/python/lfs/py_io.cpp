@@ -17,6 +17,7 @@
 #include <nanobind/stl/vector.h>
 
 #include "core/camera.hpp"
+#include "core/hdr_export_options.hpp"
 #include "core/image_io.hpp"
 #include "core/logger.hpp"
 #include "core/native_fs.hpp"
@@ -321,6 +322,26 @@ namespace lfs::python {
 
     } // namespace
 
+
+    namespace {
+        // hdr="auto|linear|baked|log", exposure_ev, tonemap="none|linear|filmic|hejl|aces|aces2|neutral" (docs/hdr.md)
+        core::hdr::ExportOptions parse_hdr_export_kwargs(const std::string& hdr, const float exposure_ev,
+                                                         const std::string& tonemap) {
+            core::hdr::ExportOptions options;
+            const auto mode = core::hdr::parse_export_mode(hdr);
+            if (!mode)
+                throw_invalid_io_argument("hdr must be one of: " + std::string(core::hdr::kExportModeNames));
+            const auto tone = core::hdr::parse_tone_operator(tonemap);
+            if (!tone)
+                throw_invalid_io_argument("tonemap must be one of: " + std::string(core::hdr::kToneOperatorNames));
+            if (!std::isfinite(exposure_ev) || exposure_ev < -30.0f || exposure_ev > 30.0f)
+                throw_invalid_io_argument("exposure_ev must be a finite EV in [-30, 30]");
+            options.mode = *mode;
+            options.exposure_ev = exposure_ev;
+            options.tone = *tone;
+            return options;
+        }
+    } // namespace
     void register_io(nb::module_& m) {
         namespace project = io::project;
         m.def("native_path", [](const std::filesystem::path& path, const bool force_extended) { return core::path_to_utf8(core::native_fs::native_path(path, force_extended)); }, nb::arg("path"), nb::arg("force_extended") = false, "Return a filename for filesystem I/O, including extended Windows paths. "
@@ -1285,10 +1306,12 @@ namespace lfs::python {
         m.def(
             "save_ply",
             [](const PySplatData& data, const LogicalPath& path, bool binary,
-               nb::object progress, nb::object extra_attributes, bool include_provenance) {
+               nb::object progress, nb::object extra_attributes, bool include_provenance,
+               const std::string& hdr, float exposure_ev, const std::string& tonemap) {
                 io::PlySaveOptions options;
                 options.output_path = path;
                 options.binary = binary;
+                options.hdr = parse_hdr_export_kwargs(hdr, exposure_ev, tonemap);
                 options.extra_attributes = parse_extra_ply_attributes(extra_attributes, path);
                 options.provenance = include_provenance ? core::make_provenance_stamp()
                                                         : core::make_minimal_provenance_stamp();
@@ -1310,7 +1333,10 @@ namespace lfs::python {
             nb::arg("data"), nb::arg("path"), nb::arg("binary") = true, nb::arg("progress") = nb::none(),
             nb::arg("extra_attributes") = nb::none(),
             nb::arg("include_provenance") = true,
+            nb::arg("hdr") = "auto", nb::arg("exposure_ev") = 0.0f, nb::arg("tonemap") = "aces",
             "Save splat data as PLY file with optional extra per-vertex float attributes. "
+            "HDR models: hdr = auto|linear|baked|log, exposure_ev (EV relative to 1/s) and tonemap for baked (docs/hdr.md). "
+
             "include_provenance (default true) writes a full provenance stamp; when false, a minimal build stamp is still embedded.");
 
         m.def(
@@ -1341,9 +1367,11 @@ namespace lfs::python {
         m.def(
             "save_sog",
             [](const PySplatData& data, const LogicalPath& path, int kmeans_iterations, bool use_gpu,
-               nb::object progress, bool include_provenance) {
+               nb::object progress, bool include_provenance,
+               const std::string& hdr, float exposure_ev, const std::string& tonemap) {
                 io::SogSaveOptions options;
                 options.output_path = path;
+                options.hdr = parse_hdr_export_kwargs(hdr, exposure_ev, tonemap);
                 options.kmeans_iterations = kmeans_iterations;
                 options.use_gpu = use_gpu;
                 options.provenance = include_provenance ? core::make_provenance_stamp()
@@ -1366,16 +1394,21 @@ namespace lfs::python {
             nb::arg("data"), nb::arg("path"), nb::arg("kmeans_iterations") = 10, nb::arg("use_gpu") = true,
             nb::arg("progress") = nb::none(),
             nb::arg("include_provenance") = true,
+            nb::arg("hdr") = "auto", nb::arg("exposure_ev") = 0.0f, nb::arg("tonemap") = "aces",
             "Save splat data as SOG compressed file. "
+            "HDR models: hdr = auto|linear|baked|log, exposure_ev (EV relative to 1/s) and tonemap for baked (docs/hdr.md). "
+
             "include_provenance (default true) writes a full provenance stamp; when false, a minimal build stamp is still embedded.");
 
         m.def(
             "save_ssog",
             [](const PySplatData& data, const LogicalPath& path, int lod_levels, float lod_ratio, int chunk_count_k, float chunk_extent,
                int chunk_min_k, int kmeans_iterations, bool use_gpu,
-               nb::object progress, bool include_provenance) {
+               nb::object progress, bool include_provenance,
+               const std::string& hdr, float exposure_ev, const std::string& tonemap) {
                 io::SsogSaveOptions options;
                 options.output_path = path;
+                options.hdr = parse_hdr_export_kwargs(hdr, exposure_ev, tonemap);
                 options.lod_levels = lod_levels;
                 options.lod_ratio = lod_ratio;
                 options.chunk_count_k = chunk_count_k;
@@ -1404,15 +1437,20 @@ namespace lfs::python {
             nb::arg("chunk_count_k") = 512, nb::arg("chunk_extent") = 16.0f, nb::arg("chunk_min_k") = 8, nb::arg("kmeans_iterations") = 10, nb::arg("use_gpu") = true,
             nb::arg("progress") = nb::none(),
             nb::arg("include_provenance") = true,
+            nb::arg("hdr") = "auto", nb::arg("exposure_ev") = 0.0f, nb::arg("tonemap") = "aces",
             "Save splat data as a PlayCanvas multi-LOD SSOG (.ssog, lod-meta.json). "
+            "HDR models: hdr = auto|linear|baked|log, exposure_ev (EV relative to 1/s) and tonemap for baked (docs/hdr.md). "
+
             "include_provenance (default true) writes a full provenance stamp; when false, a minimal build stamp is still embedded.");
 
         m.def(
             "save_spz",
-            [](const PySplatData& data, const LogicalPath& path, int version, bool include_provenance) {
+            [](const PySplatData& data, const LogicalPath& path, int version, bool include_provenance,
+               const std::string& hdr, float exposure_ev, const std::string& tonemap) {
                 io::SpzSaveOptions options;
                 options.output_path = path;
                 options.version = version;
+                options.hdr = parse_hdr_export_kwargs(hdr, exposure_ev, tonemap);
                 options.provenance = include_provenance ? core::make_provenance_stamp()
                                                         : core::make_minimal_provenance_stamp();
 
@@ -1425,15 +1463,19 @@ namespace lfs::python {
             },
             nb::arg("data"), nb::arg("path"), nb::arg("version") = 4,
             nb::arg("include_provenance") = true,
+            nb::arg("hdr") = "auto", nb::arg("exposure_ev") = 0.0f, nb::arg("tonemap") = "aces",
+            "HDR models: hdr = auto|linear|baked|log, exposure_ev (EV relative to 1/s) and tonemap for baked (docs/hdr.md). "
             "Save splat data as SPZ compressed file.\n\n"
             "version: SPZ container version, 4 (zstd, default) or 3 (legacy gzip).\n"
             "include_provenance (default true) writes a full provenance stamp; when false, a minimal build stamp is still embedded. Ignored for SPZ v3.");
 
         m.def(
             "save_usd",
-            [](const PySplatData& data, const LogicalPath& path, bool include_provenance) {
+            [](const PySplatData& data, const LogicalPath& path, bool include_provenance,
+               const std::string& hdr, float exposure_ev, const std::string& tonemap) {
                 io::UsdSaveOptions options;
                 options.output_path = path;
+                options.hdr = parse_hdr_export_kwargs(hdr, exposure_ev, tonemap);
                 options.provenance = include_provenance ? core::make_provenance_stamp()
                                                         : core::make_minimal_provenance_stamp();
 
@@ -1446,14 +1488,19 @@ namespace lfs::python {
             },
             nb::arg("data"), nb::arg("path"),
             nb::arg("include_provenance") = true,
+            nb::arg("hdr") = "auto", nb::arg("exposure_ev") = 0.0f, nb::arg("tonemap") = "aces",
             "Save splat data as OpenUSD gaussian file. "
+            "HDR models: hdr = auto|linear|baked|log, exposure_ev (EV relative to 1/s) and tonemap for baked (docs/hdr.md). "
+
             "include_provenance (default true) writes a full provenance stamp; when false, a minimal build stamp is still embedded.");
 
         m.def(
             "save_nurec_usdz",
-            [](const PySplatData& data, const LogicalPath& path, bool include_provenance) {
+            [](const PySplatData& data, const LogicalPath& path, bool include_provenance,
+               const std::string& hdr, float exposure_ev, const std::string& tonemap) {
                 io::NurecUsdzSaveOptions options;
                 options.output_path = path;
+                options.hdr = parse_hdr_export_kwargs(hdr, exposure_ev, tonemap);
                 options.provenance = include_provenance ? core::make_provenance_stamp()
                                                         : core::make_minimal_provenance_stamp();
 
@@ -1466,7 +1513,10 @@ namespace lfs::python {
             },
             nb::arg("data"), nb::arg("path"),
             nb::arg("include_provenance") = true,
+            nb::arg("hdr") = "auto", nb::arg("exposure_ev") = 0.0f, nb::arg("tonemap") = "aces",
             "Save splat data as NuRec USDZ compatible with PLY_to_USD / Omniverse. "
+            "HDR models: hdr = auto|linear|baked|log, exposure_ev (EV relative to 1/s) and tonemap for baked (docs/hdr.md). "
+
             "include_provenance (default true) writes a full provenance stamp; when false, a minimal build stamp is still embedded.");
 
         m.def(

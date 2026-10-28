@@ -8,6 +8,7 @@
 #include <cstdint>
 
 #include "core/events.hpp"
+#include "core/hdr_export_options.hpp"
 #include "core/export.hpp"
 #include "core/job_registry.hpp"
 #include "core/mesh2splat.hpp"
@@ -65,7 +66,8 @@ namespace lfs::vis {
                                int spz_version = 4,
                                bool include_provenance = true,
                                int lod_levels = 4, float lod_ratio = 0.5f, int chunk_count_k = 512,
-                               float chunk_extent = 16.0f, int chunk_min_k = 8, int kmeans_iterations = 10);
+                               float chunk_extent = 16.0f, int chunk_min_k = 8, int kmeans_iterations = 10,
+                               lfs::core::hdr::ExportOptions hdr = {});
             [[nodiscard]] bool isExporting() const {
                 return jobs_.anyRunning(JobType::Export);
             }
@@ -244,7 +246,8 @@ namespace lfs::vis {
                                   int spz_version,
                                   lfs::core::ProvenanceStamp provenance,
                                   int lod_levels, float lod_ratio, int chunk_count_k, float chunk_extent, int chunk_min_k, int kmeans_iterations,
-                                  std::optional<glm::vec3> background_color = std::nullopt);
+                                  std::optional<glm::vec3> background_color = std::nullopt,
+                                  lfs::core::hdr::ExportOptions hdr = {});
             void startColmapExport(const std::filesystem::path& path);
             void startGalleryPublicationExport(GalleryScenePublishRequest publication,
                                                std::optional<GalleryProjectExportRequest> source = std::nullopt);

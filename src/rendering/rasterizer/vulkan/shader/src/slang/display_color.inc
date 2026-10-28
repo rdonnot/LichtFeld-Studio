@@ -62,6 +62,15 @@ LFS_COLOR_INLINE LFS_COLOR_VEC3 lfsDisplayTone(LFS_COLOR_VEC3 color, LFS_COLOR_U
     }
     return color;
 }
+// The HDR display transfer: scene-linear [0,1] -> sRGB-encoded [0,1] (IEC 61966-2-1). ONE definition for the
+// viewer's HDR path (M4) and the baked LDR export (M5, core/hdr_sh.cu) so the two cannot drift.
+LFS_COLOR_INLINE float lfsSrgbEncodeChannel(float x) {
+    x = clamp(x, 0.0f, 1.0f);
+    return x <= 0.0031308f ? 12.92f * x : 1.055f * pow(x, 1.0f / 2.4f) - 0.055f;
+}
+LFS_COLOR_INLINE LFS_COLOR_VEC3 lfsSrgbEncode(LFS_COLOR_VEC3 c) {
+    return LFS_COLOR_VEC3(lfsSrgbEncodeChannel(c.x), lfsSrgbEncodeChannel(c.y), lfsSrgbEncodeChannel(c.z));
+}
 LFS_COLOR_INLINE LFS_COLOR_VEC3 lfsDisplaySplat(LFS_COLOR_VEC3 color, LFS_COLOR_UINT mode, float exposure) {
     if (mode == 0u) return color;
     LFS_COLOR_VEC3 linear = pow(max(color,LFS_COLOR_VEC3(0.0f)),LFS_COLOR_VEC3(2.2f));

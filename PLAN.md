@@ -282,6 +282,144 @@ Alternative input path that skips merging (avoids ghosting):
 
 **Done when:** round-trip PLY load/save keeps values; baked LDR export opens correctly in a stock viewer.
 
+### M5 — implementation notes (hdr-m5, 2026-10-28, on 407955cc4)
+
+**The file-format convention (Romain's decision 2026-10-28: HDR PLYs must be readable by other applications).**
+The PLY keeps the STANDARD convention `colour(w) = 0.5 + SH_C0·f_dc + Σ Yᵢ(w)·f_rest_i`, in LINEAR radiance,
+unbounded above 1; the header says so: `comment lichtfeld_hdr linear`, `comment hdr_scale <s>`, `comment
+hdr_color_max <cap>`, `comment hdr_display_exposure <1/s>`. Log encoding stays internal; `comment lichtfeld_hdr log`
+exists as the lossless PLY twin (the `.licht` project keeps the raw log tensors — and, since the review fix below,
+the HDR state — so `log` is NOT needed for a project round trip; it is kept because it is the test oracle and the
+only exact PLY of a log model). A PLY without the
+comment is an LDR PLY and behaves exactly as before (`test_ldr_ply_untouched`: converted bit for bit). The full
+reader contract is `docs/hdr.md`.
+
+**What changed, where.**
+- `src/core/include/core/hdr_export_options.hpp` (tensor-free: `ToneOperator` = the viewer's `color_tonemapping`
+  indices, `ExportMode` auto|linear|baked|log, `ExportOptions`, name parsers, the one refusal message) and
+  `core/hdr_sh.hpp` + `src/core/hdr_sh.cpp` (the conversions) + `src/core/hdr_sh.cu` (the per-direction kernel,
+  which `#include`s the viewer's `display_color.inc` with glm as the CUDA twin of the tone curves; mode 3 is the
+  same transform on a rendered image, used by the headless video). Projection: `b` is evaluated on a Fibonacci
+  sphere — 1 / 32 / 64 / 128 directions for degree 0 / 1 / 2 / 3 — as one matmul `[n·3, K+1]·[K+1, D]`, the kernel
+  applies exp / ln / the bake per (splat, direction), and the least-squares pseudo-inverse `[D, K+1]` (double on the
+  CPU, Gauss-Jordan, uploaded once) projects back; chunks of 65 536 splats. `with_sh` / `bake_hdr_to_ldr` /
+  `to_linear_radiance` return a deep-copied SplatData with the converted SH (q16 ShN is re-swizzled as fp32).
+- `src/io/formats/ply.cpp`: `FastPropertyLayout` gained `hdr_mode / hdr_scale / hdr_color_max`, `parse_hdr_comment`
+  reads the three comments (provenance is still never read by anything), `write_ply_binary` takes `comments`, the
+  SplatData `save_ply` converts according to `PlySaveOptions::hdr` (Auto = linear for an HDR model) and writes the
+  header; `load_ply` projects a `linear` file back to log SH (`linear_sh_to_log`), takes a `log` file as is, and
+  `set_hdr({true, s, cap})` (a missing cap becomes `1000·s`, logged). `io/hdr_export.hpp`:
+  `hdr_source_for_ldr_writer` — the gate in `save_spz / save_sog / save_ssog / export_html / save_usd /
+  save_nurec_usdz / save_rad` (bake when `mode == BakedLdr`, refuse otherwise). Every option struct carries
+  `core::hdr::ExportOptions hdr` (`io/exporter.hpp`).
+- CLI: `HdrExportFlags` in `argument_parser.cpp` (`--hdr-export`, `--hdr-exposure`, `--hdr-tonemap`) on the
+  training `--export` and on `convert`; `TrainingParameters::hdr_export`, `ConvertParameters::hdr_export`;
+  `training_setup.cpp save_final_splat` and `converter.cpp saveSplat` pass it. `--render-exposure`,
+  `--render-tonemap`, `--render-exr-dir` on `--render-camera-path` (`RenderPathConfig`); `application.cpp
+  runHeadlessRender` renders with `color_activation_for(*model)`, writes linear EXR frames and tone-maps the
+  video (deliverable 5; `--eval` already wrote `eval_step_N/*.exr`).
+- `trainer.cpp`: `init_log_radiance_sh0` only when `!splat.is_hdr()`; with `--hdr` and no CLI `hdr_scale` /
+  `hdr_color_max` the initial model's values are used (logged: "taken from the initial model's hdr_scale");
+  an HDR model without `--hdr` is refused with the two ways out. HDR state now survives `extract_by_mask`,
+  `crop_by_cropbox` and `Scene::mergeSplatsWithTransforms` (all-HDR merge keeps the first state; a mixed merge
+  warns and exports as LDR) — the GUI export merges even a single node, so without this the panel would have
+  written log values as colour.
+- Python: `lf.io.save_ply/save_sog/save_ssog/save_spz/save_usd/save_nurec_usdz(..., hdr=, exposure_ev=, tonemap=)`;
+  `SplatData.is_hdr / hdr_scale / hdr_color_max / set_hdr / bake_hdr_to_ldr`; `lf.export_scene(..., hdr=,
+  hdr_exposure_ev=, hdr_tonemap=)` → `python_runtime` callback → `AsyncTaskManager::performExport / startAsyncExport`
+  → every writer's `.hdr`. Export panel (`export_panel.py`, `export_panel.rml`, `en.json`): an "HDR COLOUR" row when
+  a selected splat `is_hdr` — PLY chooses linear / baked / log, every other format says it bakes, with exposure (EV)
+  and tone operator.
+- Tools: `tools/eval/hdr_ply.py` (numpy reader, `stamp` for M2-era PLYs, `compare`, `range`),
+  `tools/eval/test_hdr_ply.py` (9 tests through `convert`), `tools/eval/hdr_roundtrip.py` (the Done-when).
+
+**Measured.**
+- *Projection error, random coefficients* (2048 splats × 1024 directions, log → linear vs the log model's own
+  radiance): degree 0 exact — relative error < 1e-5 and the coefficients back to log within 1e-5 absolute. Degree 3
+  with log-space lobes σ = 0.1: median 0.29 %, p90 0.91 %, p99 2.0 %, max 9 %; σ = 0.3 (15 independent lobes, i.e.
+  ×3 swings of radiance over the sphere): median 2.6 %, p90 8.8 %, p99 24 %, max 178 %. The second projection
+  (linear → log) costs far less than the first (σ 0.1: p99 0.27 %): the linear fit is already band-limited.
+  The tests pin these as bounds with margin (0.6 % / 3 % and 4 % / 30 %).
+- *Real model* `m2_hdr7k` (`LichtFeld-HDR-m2/out/`, 965 127 splats, degree 3, s = 2421.4, cap = 2 421 400; its PLY
+  predates M5 and was stamped `lichtfeld_hdr log`), 20 000 splats × 512 directions: log vs linear median 0.048 %,
+  p90 0.42 %, p99 2.2 %, max 129 % (near-black splats); 5e-7 of the linear expansion's samples are negative.
+- *Round trip, re-rendered* (`eval <ply> -d data/smoke_hdr --images images_hdr --hdr --test-every 8`; the PLY
+  loaded through the reader, s and cap taken from the file, sh0 not re-seeded; μ-law PSNR of the re-render
+  against the ORIGINAL run's `eval_step_7000/*.exr`, μ = 5000, P99-normalised, mean of 5 held-out views):
+  log PLY **126.3 dB** (float32 noise; PSNR vs GT 36.508362 = the original's row to the last digit); linear PLY
+  **73.5 dB** (71.5–75.9 per view; PSNR vs GT 36.507084, −0.0013 dB); degree-0 copies: linear vs log **145.0 dB**
+  (exact), both 33.164474 dB vs GT. The ShN projection costs ~0.001 dB on this scene — far below the training's
+  own run-to-run spread.
+- *Baked LDR* (`--hdr-export baked --hdr-exposure 0 --hdr-tonemap aces`): no HDR comments; DC colours in
+  [5.9e-7, 0.99995]; the full degree-3 expansion in [−0.010, 1.006] on 512 directions. Synthetic σ-0.3 lobes show
+  the Gibbs overshoot of a band-limited fit of a CLIPPED curve: hard `linear` to 1.12, `neutral` [−0.08, 1.09],
+  `aces` [−0.01, 1.03]; viewers clamp the evaluated colour, so this is invisible on screen but it is a property
+  of the convention, not a bug.
+- *Stock readers*: N'Brain's `backend/components/Network/splat_tiles.py read_splat_ply` — baked colours min 0.0,
+  median 0.293, p99 0.994, max 1.0; linear colours min 4e-4, median 162.7 (≈ s/15), p99 12 328, max 23 212 — and
+  N'Brain's TypeScript `decodeSplatPly` (`frontend/src/lib/three/splat/plyDecoder.ts`, through a throwaway vitest
+  probe) decode both files, 965 127 rows each. Houdini and vk_gaussian_splatting were not run here (not on this
+  machine); they read the same header-less convention.
+- *Sizes*: log 239 353 377 B, linear 239 353 378 B, baked 239 353 247 B, degree-0 copies 65 629 358 / 65 629 403 B
+  (the HDR header is ~130 bytes; the body is unchanged float32).
+- *LDR*: `ldr_reeval.py` on the frozen `baseline_a` with this binary — "metrics: identical", "eval PNGs: 16
+  compared, identical" (row logged as M5 `m5_reeval`).
+
+**Deviations and what is owed.**
+- The degree ≥ 1 export is a projection, not an identity (stated above, in `docs/hdr.md`, and in the test
+  bounds). A reader that wants the model exactly uses `.licht` or `--hdr-export log`.
+- An HDR-linear PLY imported with the q16 ShN request keeps fp32 ShN (the conversion needs float; the training
+  setup re-encodes to q16 itself when it wants to). Logged at import.
+- `ExportMode::None` tone operator bakes like `linear` (the viewer's mode 0 skips the exposure; a bake always
+  exposes). The bake applies the sRGB OETF after the tone curve (the viewer's `lfsDisplaySplat` uses 2.2 for its
+  decode/encode of LDR splats — a 2.2-vs-sRGB difference of < 0.01 in the darks; M4 decides the viewer's HDR
+  OETF and this bake should follow it then).
+- Not exercised here: the export panel in a running GUI (headless machine) — the Python / RML / translation chain
+  compiles and mirrors the SPZ-version row; the Python bindings (no 3.12 pytest venv in this worktree; the
+  signatures follow the existing `include_provenance` pattern); no C++ gtest (would need the 35-min `build/tests`
+  configure) — the round trip is proven through the binary (`tools/eval/test_hdr_ply.py`, 9 passed) and the
+  real model instead. The USD / NuRec writers could carry linear radiance as float attributes (USD has no [0,1]
+  rule) — refused-unless-baked for now, same as the quantising formats.
+- M4 should read `SplatData::hdr()` in the viewer SH shader and show the `hdr_display_exposure` as the default
+  exposure; a `linear` PLY dropped on the viewer today is converted to log at load and renders through M4's path.
+
+**hdr-architect review fixes (same day, `hdr: M5 review fixes`).**
+- *B1 — HdrState was not in the `.licht` project*: `splat_chapter.cpp` wrote active / max / scene_scale only and
+  `splat_from_cpu_tensors` never called `set_hdr`, so a reopened HDR project exported log values as plain LDR
+  (training resumes only survived through the trainer's own `set_hdr`). Two chapters, two fixes. (a) Scene splat
+  chapters: the raw splat payload header's spare `u16 @10` carries flag `0x1` and a 12-byte trailer (u32 log_sh,
+  f32 scale, f32 color_max) follows the frozen-range table; `manifest_bytes` covers it; the reader validates it
+  and `set_hdr`s. Flag 0 files read unchanged; an older build refuses a flagged file explicitly ("expected
+  LFSPLT2 version 2") rather than misreading it. (b) A TRAINING project stores its model as a CKPT chapter
+  (`checkpoint_format.cpp`), which the review did not name: there the parameter JSON already holds `hdr` /
+  `hdr_scale` / `hdr_color_max`, so `apply_checkpoint_hdr_state(params, splat)` sets the state at the three
+  places that load a display model from a CKPT (project open, project export, `convert project.licht`). A first
+  version seeked to the JSON from inside `load_checkpoint_splat_data`; on the bounded CKPT window that broke the
+  resume that follows (`ldr_reeval` scored 27.47 then 28.62 dB with missing eval PNGs — a different split each
+  run), so the loader no longer touches the stream position and the callers, which already parse the params,
+  apply it. Test `test_project_keeps_hdr_state`: 10 iterations from a log PLY on `smoke_hdr` → `convert
+  project.licht out.ply` → `lichtfeld_hdr linear` with the file's s and cap, and SPZ from the project still
+  refuses unless baked.
+- *B2 — the streaming PLY → RAD converter bypassed the gate* (`convertFile` → `convert_ply_to_rad_lod`, whose
+  parser ignores comments): `convertFile` probes `lfs::io::is_hdr_ply` (header only) before that branch; an HDR
+  PLY is refused with the RAD refusal message unless `--hdr-export baked`, in which case it takes the in-memory
+  path (bake, then `save_rad`); `--tiles` of an HDR PLY is refused. Test `test_streaming_rad_refuses_hdr_unless_baked`.
+- Mixed HDR + LDR merge returns nullptr with an error (no silent LDR); the simplifier and the Bhattacharyya /
+  octree LOD builders carry the state (their merges average log radiance — a geometric mean — noted in the code);
+  the bake's OETF is `lfsSrgbEncode` in `display_color.inc` (the CUDA twin `using glm::clamp`s it), ONE definition
+  for M4 and M5; the trainer warns with both values when the CLI's s / cap differ from the file's; Python
+  `exposure_ev` is range-checked like the CLI; the `lichtfeld_hdr` value is case-insensitive; tests added for
+  degrees 1 and 2 (σ 0.1 lobes: p99 0.49 % / 1.1 %) and for a foreign `linear` PLY with negative lobes
+  (upper-case header, no cap). That last one changed the reader: the log of a linear expansion is now floored at
+  1 % of the splat's DC radiance (per channel, never below 1e-6) instead of an absolute 1e-6 — a hemisphere
+  clipped to ln 1e-6 = −13.8 dominated the degree-1 fit (positive-side median error 97 %, p90 4000 %); with the
+  DC-relative floor 20 % / 70 %, and the σ-0.3 degree-3 `log→linear→log` max fell from 563 % to 68 %. A log
+  basis still cannot hold a clipped hemisphere; the test pins "finite, bounded, far from the old failure". The
+  real model is unaffected (5e-7 of its samples are below the floor): linear PLY re-render 74.1 dB vs the original
+  renders (was 73.5 with the absolute floor), PSNR vs GT 36.507137. Include order
+  nits taken; `display_color.inc` stays where it is (moving it touches the Vulkan build and the compose shader's
+  relative include — owed to M4/M6 with the viewer work).
+
 ---
 
 ## M6 — Polish & upstream-ability

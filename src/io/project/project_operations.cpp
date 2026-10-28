@@ -739,6 +739,13 @@ namespace lfs::io::project {
                 if (!loaded) {
                     return std::move(loaded).error();
                 }
+                // HDR state (M5): the checkpoint's parameters say how the SH are read.
+                (void)payload->visit_materialized(
+                    [&](std::istream& stream, const std::uint64_t bytes) -> lfs::Result<void> {
+                        if (auto params = lfs::core::load_checkpoint_params(stream, bytes); params && result)
+                            lfs::core::apply_checkpoint_hdr_state(*params, *result);
+                        return {};
+                    });
                 return result;
             }
             if (binding.fourcc != "DSRC" ||

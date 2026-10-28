@@ -5,6 +5,7 @@
 #include "core/argument_parser.hpp"
 #include "core/environment.hpp"
 #include "core/error.hpp"
+#include "core/hdr_export_options.hpp"
 #include "core/logger.hpp"
 #include "core/native_fs.hpp"
 #include "core/optimization_properties.hpp"
@@ -521,6 +522,39 @@ namespace {
         }
     };
 
+    // --hdr-export / --hdr-exposure / --hdr-tonemap (PLAN.md M5, docs/hdr.md), shared by training --export and convert.
+    struct HdrExportFlags {
+        ::args::ValueFlag<std::string> mode, tonemap;
+        ::args::ValueFlag<float> exposure;
+
+        explicit HdrExportFlags(::args::Group& group)
+            : mode(group, "mode", "HDR models only: how the exported files hold colour. linear = linear-radiance SH with the lichtfeld_hdr header (PLY default, read by any splat tool); baked = display-referred LDR at --hdr-exposure through --hdr-tonemap, opens in any viewer (required for sog, ssog, spz, glb, html, usd, rad); log = the internal log SH (PLY only, LichtFeld reads it back losslessly)", {"hdr-export"}),
+              tonemap(group, "operator", "Tone operator for --hdr-export baked: none, linear, filmic, hejl, aces (default), aces2, neutral", {"hdr-tonemap"}),
+              exposure(group, "ev", "Exposure for --hdr-export baked, in EV relative to the scene's natural exposure 1/s (default 0)", {"hdr-exposure"}) {}
+
+        std::optional<std::string> read(lfs::core::hdr::ExportOptions& options) {
+            if (mode) {
+                const auto parsed = lfs::core::hdr::parse_export_mode(::args::get(mode));
+                if (!parsed)
+                    return std::format("Invalid --hdr-export '{}'. Use: {}", ::args::get(mode), lfs::core::hdr::kExportModeNames);
+                options.mode = *parsed;
+            }
+            if (tonemap) {
+                const auto parsed = lfs::core::hdr::parse_tone_operator(::args::get(tonemap));
+                if (!parsed)
+                    return std::format("Invalid --hdr-tonemap '{}'. Use: {}", ::args::get(tonemap), lfs::core::hdr::kToneOperatorNames);
+                options.tone = *parsed;
+            }
+            if (exposure) {
+                const float ev = ::args::get(exposure);
+                if (!std::isfinite(ev) || ev < -30.0f || ev > 30.0f)
+                    return std::format("Invalid --hdr-exposure {}: expected a finite EV in [-30, 30]", ev);
+                options.exposure_ev = ev;
+            }
+            return std::nullopt;
+        }
+    };
+
     struct LogLevelFlag {
         ::args::ValueFlag<std::string> level;
         explicit LogLevelFlag(::args::Group& group)
@@ -766,6 +800,7 @@ namespace {
             ::args::Flag exclude_export(paths_group, "exclude_export", "Exclude frozen --add-splat rows from PLY exports", {"exclude-export"});
             ::args::Flag no_provenance(paths_group, "no-provenance", "Strip identifying metadata (export id, timestamps, training info) from outputs; a minimal build stamp is always embedded", {"no-provenance"});
             ::args::ValueFlag<std::string> export_formats(paths_group, "formats", "Also export the final trained splat next to project.licht: comma-separated ply, sog, ssog, spz, usd, usda, usdc, html, rad", {"export"});
+            HdrExportFlags hdr_export_flags(paths_group);
             SogFlags sog_flags(paths_group);
 
             ::args::ValueFlag<std::string> import_cameras(paths_group, "path", "Import COLMAP cameras from sparse folder (no images required)", {"import-cameras"});
@@ -780,6 +815,9 @@ namespace {
             ::args::ValueFlag<int> render_width(render_path_group, "width", "Output width (default 1920)", {"render-width"});
             ::args::ValueFlag<int> render_height(render_path_group, "height", "Output height (default 1080)", {"render-height"});
             ::args::ValueFlag<int> render_fps(render_path_group, "fps", "Output framerate (default 30)", {"render-fps"});
+            ::args::ValueFlag<float> render_exposure(render_path_group, "ev", "HDR scenes: video exposure in EV relative to the scene's natural exposure 1/s (default 0)", {"render-exposure"});
+            ::args::ValueFlag<std::string> render_tonemap(render_path_group, "operator", "HDR scenes: tone operator for the video: none, linear, filmic, hejl, aces (default), aces2, neutral", {"render-tonemap"});
+            ::args::ValueFlag<std::string> render_exr_dir(render_path_group, "dir", "Also write every frame as a linear EXR (frame_NNNNNN.exr) into this folder; the untouched radiance of an HDR scene", {"render-exr-dir"});
             ::args::ValueFlag<int> render_crf(render_path_group, "crf", "Video quality, lower=better (default 18)", {"render-crf"});
             ::args::Group render_path_provenance_note(render_path_group, "  Metadata: videos always embed a minimal build stamp; --no-provenance strips identifying metadata");
 
@@ -1198,6 +1236,20 @@ namespace {
                 if (render_fps) {
                     cfg.fps = ::args::get(render_fps);
                 }
+                if (render_exposure) {
+                    cfg.exposure_ev = ::args::get(render_exposure);
+                    if (!std::isfinite(cfg.exposure_ev) || cfg.exposure_ev < -30.0f || cfg.exposure_ev > 30.0f)
+                        return std::unexpected(std::format("Invalid --render-exposure {}: expected a finite EV in [-30, 30]", cfg.exposure_ev));
+                }
+                if (render_tonemap) {
+                    const auto parsed = lfs::core::hdr::parse_tone_operator(::args::get(render_tonemap));
+                    if (!parsed)
+                        return std::unexpected(std::format("Invalid --render-tonemap '{}'. Use: {}", ::args::get(render_tonemap), lfs::core::hdr::kToneOperatorNames));
+                    cfg.tone = static_cast<int>(*parsed);
+                }
+                if (render_exr_dir) {
+                    cfg.exr_dir = lfs::core::utf8_to_path(::args::get(render_exr_dir));
+                }
                 if (render_crf) {
                     cfg.crf = ::args::get(render_crf);
                 }
@@ -1307,6 +1359,8 @@ namespace {
                 }
                 params.export_formats = std::move(*formats);
             }
+            if (const auto error = hdr_export_flags.read(params.hdr_export))
+                return std::unexpected(*error);
 
             // Training mode
             const bool has_data_path = data_path && !::args::get(data_path).empty();
@@ -2206,6 +2260,7 @@ namespace {
         ::args::ValueFlag<int> spz_version(parser, "version", "SPZ container version: 3 (legacy gzip) or 4 (zstd, default)", {"spz-version"});
         ::args::Flag no_provenance(parser, "no-provenance", "Strip identifying metadata (export id, timestamps, training info) from outputs; a minimal build stamp is always embedded", {"no-provenance"});
         SogFlags sog_flags(parser);
+        HdrExportFlags hdr_export_flags(parser);
         LogLevelFlag log_level(parser);
         ::args::ValueFlag<std::string> tiles(parser, "AxB", "Replicate a PLY source across an AxB ground-plane grid (RAD output only)", {"tiles"});
         ::args::ValueFlag<std::string> lod_builder(parser, "builder", "PLY->RAD LOD tree builder: bhatt (default) or octree (hybrid: octree fine levels + similarity-ordered bhatt top, much faster)", {"lod-builder"});
@@ -2259,6 +2314,8 @@ namespace {
             params.output_path = lfs::core::utf8_to_path(::args::get(output));
         if (!sog_flags.read(params))
             return std::unexpected("Invalid SSOG LOD options");
+        if (const auto error = hdr_export_flags.read(params.hdr_export))
+            return std::unexpected(*error);
 
         params.overwrite = overwrite;
 
