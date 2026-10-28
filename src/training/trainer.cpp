@@ -1047,6 +1047,7 @@ namespace lfs::training {
         roi_weight_map_ = {};
         densification_ssim_workspace_ = {};
         densification_error_map_ = {};
+        hdr_bracket_position_error_.clear();
         clearEdgeWeightCache();
         clear_thin_structure_cache();
         gradient_residual_workspace_ = {};
@@ -3927,6 +3928,7 @@ namespace lfs::training {
         normal_prior_depth_scalar_ = {};
         densification_ssim_workspace_ = {};
         densification_error_map_ = {};
+        hdr_bracket_position_error_.clear();
         clearEdgeWeightCache();
         clear_thin_structure_cache();
         gradient_residual_workspace_ = {};
@@ -8160,6 +8162,26 @@ namespace lfs::training {
                         if (tile_error_map.is_valid() && roi_weight.is_valid() &&
                             tile_error_map.numel() == roi_weight.numel()) {
                             tile_error_map.mul_(roi_weight.reshape(tile_error_map.shape()));
+                        }
+
+                        // HDR fork (PLAN.md M3 improvement round, B3): a bracket's frames share a pose, so the
+                        // growth credit of a visit is the error map accumulated over the POSITION's frames (an
+                        // EMA, weight hdr_bracket_err_ema on this frame): a frame's own shot noise and 8-bit
+                        // steps, independent between frames, average out, and every visit credits the whole
+                        // bracket's error, not one frame's unclipped band. Anchored before the mean
+                        // normalisation so the map's scale stays MRNF's. Off (0) for every non-bracket run.
+                        if (tile_error_map.is_valid() && step_params.hdr_brackets &&
+                            step_params.hdr_bracket_err_ema > 0.0f && cam) {
+                            const float a = std::min(step_params.hdr_bracket_err_ema, 1.0f);
+                            auto& acc = hdr_bracket_position_error_[std::string(position_key(cam->image_name()))];
+                            if (!acc.is_valid() || acc.shape() != tile_error_map.shape()) {
+                                acc = tile_error_map.clone();
+                            } else {
+                                acc.sync_to_stream(tile_error_map.stream());
+                                acc.mul_(1.0f - a);
+                                acc.add_(tile_error_map.mul(a));
+                                tile_error_map.copy_from(acc);
+                            }
                         }
 
                         if (tile_error_map.is_valid() && params_.optimization.densify_structure_weight > 0.0f) {

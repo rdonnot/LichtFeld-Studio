@@ -1105,6 +1105,14 @@ namespace lfs::core::param {
             .ui_step(0.25)
             .flags(PROP_ADVANCED)
             .all_strategies()
+            .float_prop(&OptimizationParameters::hdr_bracket_err_ema,
+                        "hdr_bracket_err_ema", "HDR bracket growth error EMA", d.hdr_bracket_err_ema, 0.0f, 1.0f,
+                        "Bracket training: the densification error map is an EMA per camera position across the "
+                        "bracket's frames, with this weight on the current frame; 0 = each frame's own map")
+            .precision(2)
+            .ui_step(0.05)
+            .flags(PROP_ADVANCED)
+            .all_strategies()
             .float_prop(&OptimizationParameters::hdr_bracket_bg,
                         "hdr_bracket_bg", "HDR bracket random background", d.hdr_bracket_bg, 0.0f, 100.0f,
                         "Bracket training: random per-pixel background, each channel uniform in [0, value * hdr_scale] "

@@ -1187,6 +1187,11 @@ namespace lfs::python {
                 [](PyOptimizationParams&, float v) { modify_params([v](auto& p) { p.hdr_bracket_hat = v; }); },
                 "Bracket training: Debevec's hat of the JPEG code to this power as the per-pixel loss / error-map weight; 0 = off")
             .def_prop_rw(
+                "hdr_bracket_err_ema",
+                [](PyOptimizationParams& self) { return self.params().hdr_bracket_err_ema; },
+                [](PyOptimizationParams&, float v) { modify_params([v](auto& p) { p.hdr_bracket_err_ema = v; }); },
+                "Bracket training: densification error map as an EMA per camera position across the bracket's frames (weight on the current frame); 0 = off")
+            .def_prop_rw(
                 "use_exposure_correction",
                 [](PyOptimizationParams& self) { return self.params().use_exposure_correction; },
                 [](PyOptimizationParams&, bool v) { modify_params([v](auto& p) { p.use_exposure_correction = v; }); },

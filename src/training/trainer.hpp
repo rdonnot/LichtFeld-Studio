@@ -859,6 +859,8 @@ namespace lfs::training {
         std::unique_ptr<HdrBracketStage> hdr_bracket_stage_;
         float hdr_bracket_hat_mean_ = 0.5f;        // B2: the set's mean hat weight (measured with s; 0.5 = uniform codes)
         float hdr_bracket_loss_denominator_ = 0.f; // B2: H * W * hat mean of the step's frame; 0 = the mask sum
+        // B3: the densification error map's EMA per camera position (eval_split.hpp position_key), [H,W] each.
+        std::unordered_map<std::string, core::Tensor> hdr_bracket_position_error_;
         // Train-set EXIF EV mean used by seed_exposure (0.5 * (ev - mean)). Unset
         // when the seed was skipped or disabled; eval then uses exposure 0.
         std::optional<float> ppisp_exif_exposure_mean_;

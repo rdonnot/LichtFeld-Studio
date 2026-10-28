@@ -416,7 +416,8 @@ namespace {
         EXPECT_FLOAT_EQ(defaults.hdr_exposure_lr, 2e-3f);
         EXPECT_FLOAT_EQ(defaults.hdr_exposure_max_delta, 3.0f);
         EXPECT_FLOAT_EQ(defaults.hdr_bracket_bg, 1.0f);
-        EXPECT_FLOAT_EQ(defaults.hdr_bracket_hat, 1.0f);
+        EXPECT_FLOAT_EQ(defaults.hdr_bracket_hat, 0.0f);
+        EXPECT_FLOAT_EQ(defaults.hdr_bracket_err_ema, 0.0f);
         EXPECT_EQ(defaults.to_json().at("hdr_exposure").get<std::string>(), "learn");
         EXPECT_EQ(defaults.to_json().at("hdr_crf").get<std::string>(), "");
 
@@ -432,6 +433,7 @@ namespace {
         params.hdr_exposure_max_delta = 2.0f;
         params.hdr_bracket_bg = 0.5f;
         params.hdr_bracket_hat = 2.0f;
+        params.hdr_bracket_err_ema = 0.4f;
         EXPECT_TRUE(params.validate().empty()) << params.validate();
 
         const auto json = params.to_json();
@@ -447,6 +449,7 @@ namespace {
         EXPECT_FLOAT_EQ(restored.hdr_exposure_max_delta, 2.0f);
         EXPECT_FLOAT_EQ(restored.hdr_bracket_bg, 0.5f);
         EXPECT_FLOAT_EQ(restored.hdr_bracket_hat, 2.0f);
+        EXPECT_FLOAT_EQ(restored.hdr_bracket_err_ema, 0.4f);
         auto old_json = json;
         old_json["hdr_exposure"] = "learn";
         EXPECT_EQ(OptimizationParameters::from_json(old_json).hdr_exposure, HdrExposureMode::Learn);
@@ -472,6 +475,9 @@ namespace {
         auto bad_hat = params;
         bad_hat.hdr_bracket_hat = -1.0f;
         EXPECT_NE(bad_hat.validate().find("hdr_bracket_hat"), std::string::npos);
+        auto bad_ema = params;
+        bad_ema.hdr_bracket_err_ema = 1.5f;
+        EXPECT_NE(bad_ema.validate().find("hdr_bracket_err_ema"), std::string::npos);
         // Plain --hdr on EXRs is untouched by the bracket parameters.
         auto exr = defaults;
         exr.hdr = true;
