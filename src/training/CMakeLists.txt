@@ -16,6 +16,7 @@ set(LFS_TRAINING_KERNEL_SOURCES
     kernels/blob_seeding.cu
     kernels/gradient_residual.cu
     kernels/hdr_mulaw.cu
+    kernels/hdr_bracket.cu
     kernels/ssim.cu
     kernels/l1_loss.cu
     kernels/ssim_reduction.cu
@@ -111,6 +112,7 @@ set(TRAINING_NEW_SOURCES
     components/ppisp_controller.cu
     components/ppisp_controller_pool.cu
     components/ppisp_file.cpp
+    components/hdr_bracket_stage.cpp
     components/popspa_controller.cpp
     control/command_api.cpp
     metrics/compare_images.cpp

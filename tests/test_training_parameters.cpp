@@ -271,6 +271,7 @@ namespace {
             {"eval_steps", "vector-valued evaluation schedule is managed separately"},
             {"image_count_scaler", "image-count scaling bookkeeping is not a registry property"},
             {"image_count_scaler_total", "steps_scaler the image-count share was written with"},
+            {"hdr_crf", "HDR bracket CRF path uses its dedicated Python binding (like the PPISP sidecar)"},
             {"ppisp_sidecar_path", "PPISP sidecar path uses its dedicated Python binding"},
             {"save_steps", "vector-valued save schedule is managed separately"},
         };

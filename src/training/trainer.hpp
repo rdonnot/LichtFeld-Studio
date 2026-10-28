@@ -6,6 +6,7 @@
 
 #include "checkpoint.hpp"
 #include "components/bilateral_grid.hpp"
+#include "components/hdr_bracket_stage.hpp"
 #include "components/popspa_controller.hpp"
 #include "components/ppisp.hpp"
 #include "components/ppisp_controller_pool.hpp"
@@ -227,6 +228,11 @@ namespace lfs::training {
         static std::expected<float, std::string> measure_hdr_scale(
             const std::vector<std::shared_ptr<lfs::core::Camera>>& cameras);
         static void init_log_radiance_sh0(lfs::core::SplatData& model, float hdr_scale, float hdr_mu);
+        // HDR from brackets (PLAN.md M3 §2): s from the training JPEGs through the Debevec LUT at their EXIF gains
+        // (P99 luminance of unsaturated pixels); also logs the gate fractions per EV once.
+        static std::expected<float, std::string> measure_hdr_scale_brackets(
+            const std::vector<std::shared_ptr<lfs::core::Camera>>& cameras, const HdrBracketStage& stage);
+        [[nodiscard]] const HdrBracketStage* hdr_bracket_stage() const noexcept { return hdr_bracket_stage_.get(); }
 
         // Check if trainer is initialized
         bool isInitialized() const { return initialized_.load(); }
@@ -695,6 +701,10 @@ namespace lfs::training {
 
         std::expected<void, std::string> initialize_bilateral_grid();
         std::expected<void, std::string> initialize_ppisp();
+        // HDR from brackets: load the CRF, read every frame's EXIF gain, build the stage (training + held-out frames).
+        std::expected<void, std::string> initialize_hdr_bracket_stage(
+            const std::vector<std::shared_ptr<lfs::core::Camera>>& cameras);
+        void log_hdr_bracket_diagnostics() const; // mean/max |delta| (the drift monitor of design §8.3)
         std::expected<void, std::string> initialize_ppisp_controller();
         std::expected<void, std::string> apply_ppisp_sidecar_if_configured();
         std::expected<PPISPFileMetadata, std::string> build_ppisp_sidecar_metadata() const;
@@ -844,6 +854,8 @@ namespace lfs::training {
 
         // PPISP for physically-plausible ISP appearance modeling (optional)
         std::unique_ptr<PPISP> ppisp_;
+        // HDR from brackets (PLAN.md M3): exposure + fixed Debevec CRF + saturation gate before the LDR loss.
+        std::unique_ptr<HdrBracketStage> hdr_bracket_stage_;
         // Train-set EXIF EV mean used by seed_exposure (0.5 * (ev - mean)). Unset
         // when the seed was skipped or disabled; eval then uses exposure 0.
         std::optional<float> ppisp_exif_exposure_mean_;

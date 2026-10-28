@@ -82,11 +82,17 @@ TEST(EvalSplitTest, ByPositionRanksByFirstAppearanceAndMatchesByImageForSingleFr
     const std::vector<bool> want = {true, true, true, true, true, false, false, false, true, false, false};
     EXPECT_EQ(held, want);
 
-    // One frame per position (the merged set's pos_NNN.png): both rules give the same split.
+    // One frame per position with names carrying no '_' (frame0001.png): both rules give the same split.
     std::vector<std::string> singles;
     for (int p = 0; p < 40; ++p)
-        singles.push_back(std::format("pos_{:03d}.png", p));
+        singles.push_back(std::format("frame{:04d}.png", p));
     EXPECT_EQ(eval_split_mask(singles, 8, true), eval_split_mask(singles, 8, false));
+    // The merged set's pos_NNN.png names are NOT per-frame names: by position they collapse to the one key "pos"
+    // and everything is held out — which is why --test-by-position is for bracket sets only.
+    std::vector<std::string> merged;
+    for (int p = 0; p < 40; ++p)
+        merged.push_back(std::format("pos_{:03d}.png", p));
+    EXPECT_EQ(eval_split_mask(merged, 8, true), std::vector<bool>(40, true));
 
     // test_every <= 0 is treated as 1 (every image held out), never a division by zero.
     EXPECT_EQ(eval_split_mask(singles, 0, true), std::vector<bool>(40, true));

@@ -4,6 +4,7 @@
 #include "checkpoint.hpp"
 #include "components/bilateral_grid.hpp"
 #include "components/popspa_controller.hpp"
+#include "components/hdr_bracket_stage.hpp"
 #include "components/ppisp.hpp"
 #include "components/ppisp_controller_pool.hpp"
 #include "core/cuda_error.hpp"
@@ -354,7 +355,8 @@ namespace lfs::training {
         const PPISP* ppisp,
         const PPISPControllerPool* ppisp_controller_pool,
         const POPSpaController* popspa_controller,
-        const AdamOptimizer* popspa_optimizer) {
+        const AdamOptimizer* popspa_optimizer,
+        const HdrBracketStage* hdr_bracket_stage) {
         try {
             if (iteration < 0) {
                 return checkpoint_stream_error(
@@ -413,10 +415,12 @@ namespace lfs::training {
             const auto header_pos = destination.tellp();
             if (save_popspa)
                 header.flags = header.flags | CheckpointFlags::HAS_POPSPA;
+            if (hdr_bracket_stage)
+                header.flags = header.flags | CheckpointFlags::HAS_HDR_BRACKET_STAGE;
             // Only POPSpa state needs the newer layout; keep other checkpoints
             // readable by builds that predate it.
-            header.version = save_popspa ? lfs::core::CHECKPOINT_VERSION_HAS_POPSPA
-                                         : lfs::core::CHECKPOINT_VERSION_FIELDWISE_CONFIGS;
+            header.version = (save_popspa || hdr_bracket_stage) ? lfs::core::CHECKPOINT_VERSION_HAS_POPSPA
+                                                                : lfs::core::CHECKPOINT_VERSION_FIELDWISE_CONFIGS;
             if (header_pos == std::streampos(-1)) {
                 return checkpoint_stream_error(
                     lfs::ErrorCode::FailedPrecondition,
@@ -472,6 +476,10 @@ namespace lfs::training {
                 if (!serialized)
                     return std::move(serialized).error();
                 popspa_optimizer->serialize(destination);
+            }
+            if (hdr_bracket_stage) {
+                hdr_bracket_stage->serialize(destination);
+                LOG_DEBUG("HDR bracket stage staged: {} frames", hdr_bracket_stage->num_frames());
             }
 
             const auto params_pos = destination.tellp();
@@ -587,7 +595,8 @@ namespace lfs::training {
         PPISPControllerPool* ppisp_controller_pool,
         lfs::core::SplatTensorAllocator tensor_allocator,
         POPSpaController* popspa_controller,
-        AdamOptimizer* popspa_optimizer) {
+        AdamOptimizer* popspa_optimizer,
+        HdrBracketStage* hdr_bracket_stage) {
         std::ifstream file;
         if (!lfs::core::open_file_for_read(
                 path, std::ios::binary, file)) {
@@ -609,7 +618,7 @@ namespace lfs::training {
             ppisp, ppisp_controller_pool,
             std::move(tensor_allocator),
             lfs::core::path_to_utf8(path), nullptr,
-            popspa_controller, popspa_optimizer);
+            popspa_controller, popspa_optimizer, hdr_bracket_stage);
     }
 
     CheckpointLoadResult load_checkpoint(
@@ -624,7 +633,8 @@ namespace lfs::training {
         const std::string_view source_name,
         lfs::core::SplatData* preloaded_model,
         POPSpaController* popspa_controller,
-        AdamOptimizer* popspa_optimizer) {
+        AdamOptimizer* popspa_optimizer,
+        HdrBracketStage* hdr_bracket_stage) {
         try {
             const auto load_started = std::chrono::steady_clock::now();
             if (bool(popspa_controller) != bool(popspa_optimizer))
@@ -919,6 +929,20 @@ namespace lfs::training {
                 loaded_params.optimization.enable_sparsity = false;
             }
 
+            // HDR bracket stage (PLAN.md M3): per-frame exposure deltas, after POPSpa, before the parameter JSON.
+            std::unique_ptr<HdrBracketStage> loaded_hdr_bracket_stage;
+            if (has_flag(header.flags, CheckpointFlags::HAS_HDR_BRACKET_STAGE)) {
+                if (hdr_bracket_stage) {
+                    loaded_hdr_bracket_stage = std::make_unique<HdrBracketStage>();
+                    loaded_hdr_bracket_stage->deserialize(file);
+                } else {
+                    LOG_WARN("Checkpoint has an HDR bracket stage but none provided - skipping");
+                    HdrBracketStage::consume_checkpoint(file);
+                }
+            } else if (hdr_bracket_stage) {
+                LOG_WARN("HDR bracket stage requested but not in checkpoint - exposure deltas start at 0");
+            }
+
             // Reserve capacity for densification after the checkpoint params are resolved.
             if (header.params_json_size > 0) {
                 const auto serialized_state_end = file.tellg();
@@ -975,6 +999,10 @@ namespace lfs::training {
                 popspa_optimizer->adopt_checkpoint_state(*loaded_popspa_optimizer);
             } else if (popspa_controller) {
                 popspa_controller->reset();
+            }
+            if (loaded_hdr_bracket_stage) {
+                hdr_bracket_stage->adopt_checkpoint_state(*loaded_hdr_bracket_stage);
+                LOG_INFO("HDR bracket stage restored: {} frames", hdr_bracket_stage->num_frames());
             }
 
             LOG_INFO("Checkpoint loaded: {} ({} Gaussians, iter {})",
