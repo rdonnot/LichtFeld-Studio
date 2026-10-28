@@ -404,8 +404,10 @@ act under `--hdr-brackets`; a legacy `1 << 5` checkpoint bit is mapped to `1 << 
    gap is on the four well-covered positions, where M2 leads by 1–2.5 dB at every EV — one frame per visit teaching
    one band of a noisy JPEG against a five-frame average. Closing it needs information, not weighting: more
    iterations (14 k gave +0.9 dB), or the merge as a prior — the M2 path stays the recommendation for tripod sets.
-5. Run-to-run spread: the B1 configuration run twice scores 31.21 and 31.32 (959 k / 969 k splats) — differences
-   of ~0.1 dB between rows of this table are seed noise, the B2 (−0.5) and 14 k-iteration (+0.9) effects are not.
+5. Run-to-run spread: the B1 configuration run twice scores 31.21 and 31.32 (959 k / 969 k splats), B2 (hat 1)
+   run twice 30.74 and 30.92 — differences of ~0.1–0.2 dB between rows of this table are seed noise; B2's −0.4 to
+   −0.5 against B1 and the 14 k-iteration +0.9 are not. The second runs are `out/m3_b1_bg_repeat` and the current
+   `out/m3_b2_hat` (rows of 17:35 / 17:38 in `out/metrics.csv`).
 6. Defaults after the round: `hdr_bracket_bg 1` (on), `hdr_bracket_hat 0`, `hdr_bracket_err_ema 0`. LDR bit-identity
    held at every step (`ldr_reeval.py` on `baseline_a`: "metrics: identical", "eval PNGs: 16 compared, identical" —
    rows `m3_reeval_b2`, `m3_reeval_b3`). Per-position numbers: `out/<run>.eval`.
