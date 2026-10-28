@@ -371,6 +371,7 @@ scored by `bracket_eval.py`, rows in `out/metrics.csv`; M2 = `out/m2_hdr7k` resc
 | M2 `m2_hdr7k` (target) | merged EXRs | 33.29 | 33.13 | 31.34 | 30.33 | 32.66 | **32.15** | 36.48 | 33.06 | 965 k |
 | M3 baseline `m3_learn` | — | 32.33 | 31.59 | 29.15 | 27.80 | 31.04 | **30.38** | 34.19 | 32.26 | 1 009 k |
 | B1 `m3_b1_bg` | `--hdr-bracket-bg 1` | 32.40 | 32.05 | 30.41 | 29.98 | 31.23 | **31.21** | 36.10 | 34.01 | 959 k |
+| B1 repeat `m3_b1_bg_repeat` | same flags, second run | 32.43 | 32.09 | 30.61 | 30.34 | 31.12 | **31.32** | 36.24 | 34.00 | 969 k |
 | B2 `m3_b2_hat` | B1 + `--hdr-bracket-hat 1` | 31.55 | 31.01 | 29.57 | 29.71 | 31.85 | **30.74** | 34.18 | 30.84 | 901 k |
 | B2 `m3_b2_hat05` | B1 + `--hdr-bracket-hat 0.5` | 31.82 | 31.35 | 29.93 | 29.92 | 31.87 | **30.98** | 35.55 | 32.47 | 905 k |
 | B3 `m3_b3` | B1 + `--hdr-bracket-err-ema 0.4 --max-cap 965127` | 32.45 | 31.89 | 30.31 | 29.97 | 31.69 | **31.26** | 35.06 | 34.93 | 190 k |
@@ -388,8 +389,13 @@ act under `--hdr-brackets`; a legacy `1 << 5` checkpoint bit is mapped to `1 << 
 
 **Verdict.**
 1. **Done-when still NOT met: best 31.27 dB vs 32.15, −0.9 dB** (from −1.8). B1 is the whole gain (+0.83 dB,
-   μ-law vs truth 32.26 → 34.01, now ABOVE M2's 33.06): the ~3 % held-out radiance deficit was coverage, as the
-   bias scan said, and the random radiance background removes most of it (render/merge median gain 1.035 → 1.031).
+   μ-law vs truth 32.26 → 34.01, now ABOVE M2's 33.06). What it fixed is the dark TAIL, not the uniform offset: the
+   diagnostic (eval-all renders of `m3_learn`, `LFS_EVAL_DUMP_ALPHA=1`) found the ~2 % render/merge deficit on the
+   TRAINING positions too (median 0.981 vs 0.980 held-out, every decile 0.973–0.99) and the accumulated alpha the
+   same as M2's (mean 1−α 0.029 / 0.033 held-out / training vs M2 0.034 / 0.032) — so neither "held-out only" nor
+   "α < 1" held; after B1 the per-decile deficit is unchanged (median 0.981) while the geometric-mean gain fell
+   1.083 → 1.029, i.e. the random background removed the under-covered dark pixels. The uniform ~2 % (worth
+   +0.33 dB at most) stays unexplained; opacity_reg is already 0 under MRNF, so it is not that regulariser.
 2. **B2 hurts, monotonically in p** (31.21 → 30.98 → 30.74; μ-law vs truth 34.0 → 32.5 → 30.8): the toe and
    shoulder codes the hat silences are the ONLY frames that see the lamp and the alcove, and the mid-range-weighted
    error map grows where nothing was missing. Default is now 0; the flag stays for a real capture's noisy curve.
@@ -403,7 +409,11 @@ act under `--hdr-brackets`; a legacy `1 << 5` checkpoint bit is mapped to `1 << 
    gap is on the four well-covered positions, where M2 leads by 1–2.5 dB at every EV — one frame per visit teaching
    one band of a noisy JPEG against a five-frame average. Closing it needs information, not weighting: more
    iterations (14 k gave +0.9 dB), or the merge as a prior — the M2 path stays the recommendation for tripod sets.
-5. Defaults after the round: `hdr_bracket_bg 1` (on), `hdr_bracket_hat 0`, `hdr_bracket_err_ema 0`. LDR bit-identity
+5. Run-to-run spread: the B1 configuration run twice scores 31.21 and 31.32 (959 k / 969 k splats), B2 (hat 1)
+   run twice 30.74 and 30.92 — differences of ~0.1–0.2 dB between rows of this table are seed noise; B2's −0.4 to
+   −0.5 against B1 and the 14 k-iteration +0.9 are not. The second runs are `out/m3_b1_bg_repeat` and the current
+   `out/m3_b2_hat` (rows of 17:35 / 17:38 in `out/metrics.csv`).
+6. Defaults after the round: `hdr_bracket_bg 1` (on), `hdr_bracket_hat 0`, `hdr_bracket_err_ema 0`. LDR bit-identity
    held at every step (`ldr_reeval.py` on `baseline_a`: "metrics: identical", "eval PNGs: 16 compared, identical" —
    rows `m3_reeval_b2`, `m3_reeval_b3`). Per-position numbers: `out/<run>.eval`.
 
