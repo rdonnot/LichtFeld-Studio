@@ -699,7 +699,7 @@ namespace lfs::core {
             // Additional final-splat exports written next to project.licht after
             // training completes. Empty = only the .licht project is written.
             std::vector<OutputFormat> export_formats;
-            // --hdr-export / --hdr-exposure / --hdr-tonemap: how an HDR model's --export files are written
+            // --hdr-export / --hdr-export-ev / --hdr-tonemap: how an HDR model's --export files are written
             // (PLY: linear radiance by default; other formats need `baked`). docs/hdr.md.
             hdr::ExportOptions hdr_export{};
             int sog_iterations = 10;
@@ -785,7 +785,7 @@ namespace lfs::core {
             RadExportMode rad_export_mode = RadExportMode::Stream;
             bool overwrite = false;         // Skip overwrite prompts
             bool include_provenance = true; // always written to the format's metadata slot; caller chooses full vs minimal, writers fall back to minimal
-            hdr::ExportOptions hdr_export{}; // --hdr-export / --hdr-exposure / --hdr-tonemap (docs/hdr.md)
+            hdr::ExportOptions hdr_export{}; // --hdr-export / --hdr-export-ev / --hdr-tonemap (docs/hdr.md)
         };
 
         // Parameters for the mesh2splat command

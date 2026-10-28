@@ -16,6 +16,9 @@ dependencies = [
 [tool.pytest.ini_options]
 testpaths = ["eval", "synth"]
 python_files = ["test_*.py"]
+markers = [
+    "ldr_reference: needs the built binary and the frozen LDR reference run (out/baseline_a); skipped otherwise",
+]
 
 [dependency-groups]
 dev = [

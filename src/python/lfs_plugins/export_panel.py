@@ -520,13 +520,13 @@ class ExportPanel(Panel):
 
         if self._sync_selection(splat_nodes):
             self._rebuild_model_records(scene_nodes)
-            self._dirty_model("export_label", "can_export", "export_error_text")
+            self._dirty_model("export_label", "can_export", "export_error_text", "show_hdr_settings", "show_hdr_mode", "show_hdr_baked_note", "show_hdr_bake_settings", "hdr_mode", "hdr_exposure", "hdr_tone")
             dirty = True
 
         if node_key != self._last_node_key:
             self._last_node_key = node_key
             self._rebuild_model_records(scene_nodes)
-            self._dirty_model("show_no_models", "can_export", "export_error_text")
+            self._dirty_model("show_no_models", "can_export", "export_error_text", "show_hdr_settings", "show_hdr_mode", "show_hdr_baked_note", "show_hdr_bake_settings", "hdr_mode", "hdr_exposure", "hdr_tone")
             dirty = True
 
         colmap_key = (self._format, self._can_export_colmap())
@@ -892,6 +892,10 @@ class ExportPanel(Panel):
             "spz_version",
             "can_export",
             "export_label",
+            # the HDR rows depend on the format (PLY: mode select; others: baked note + EV/tone)
+            "show_hdr_mode",
+            "show_hdr_baked_note",
+            "show_hdr_bake_settings",
         )
 
     def _on_model_toggle(self, ev):

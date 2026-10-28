@@ -209,12 +209,13 @@ namespace lfs::training::kernels {
             bracket_forward_kernel<unsigned char><<<grid, kThreads, 0, stream>>>(
                 input.ptr<float>(), z.ptr<float>(), dzdu_ptr, gt_c.ptr<unsigned char>(), args.log_irradiance,
                 args.b, args.delta, args.frame, hw, n, std::round(args.gate_high * 255.0f), std::round(args.gate_low * 255.0f), kInv255);
+            LFS_CUDA_LAUNCH_CHECK(stream, "training.hdr_bracket.forward");
         } else {
             bracket_forward_kernel<float><<<grid, kThreads, 0, stream>>>(
                 input.ptr<float>(), z.ptr<float>(), dzdu_ptr, gt_c.is_valid() ? gt_c.ptr<float>() : nullptr,
                 args.log_irradiance, args.b, args.delta, args.frame, hw, n, args.gate_high, args.gate_low, 1.0f);
+            LFS_CUDA_LAUNCH_CHECK(stream, "training.hdr_bracket.forward");
         }
-        LFS_CUDA_LAUNCH_CHECK(stream, "training.hdr_bracket.forward");
         return z;
     }
 
@@ -269,13 +270,15 @@ namespace lfs::training::kernels {
         const auto gt_c = gt.is_contiguous() ? gt : gt.contiguous();
         const cudaStream_t stream = out.stream();
         gt_c.sync_to_stream(stream);
-        if (gt_c.dtype() == lfs::core::DataType::UInt8)
+        if (gt_c.dtype() == lfs::core::DataType::UInt8) {
             bracket_hat_kernel<unsigned char><<<blocks_for(hw), kThreads, 0, stream>>>(
                 gt_c.ptr<unsigned char>(), out.ptr<float>(), hw, 1.0f, p);
-        else
+            LFS_CUDA_LAUNCH_CHECK(stream, "training.hdr_bracket.hat");
+        } else {
             bracket_hat_kernel<float><<<blocks_for(hw), kThreads, 0, stream>>>(
                 gt_c.ptr<float>(), out.ptr<float>(), hw, 255.0f, p);
-        LFS_CUDA_LAUNCH_CHECK(stream, "training.hdr_bracket.hat");
+            LFS_CUDA_LAUNCH_CHECK(stream, "training.hdr_bracket.hat");
+        }
     }
 
     double hdr_bracket_hat_host(const double code, const double p) {

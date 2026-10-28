@@ -1,0 +1,66 @@
+name: HDR fork tests
+
+# The HDR fork's own tests (PLAN.md M6; one local command: tools/run_hdr_tests.sh). It does not touch upstream's
+# workflows: it runs on the fork's hdr* branches and on pull requests that change the HDR tooling, plugin, docs
+# or tests, and never on MrNeRF/LichtFeld-Studio itself.
+on:
+  push:
+    branches: ['hdr', 'hdr-*']
+  pull_request:
+    paths:
+      - 'tools/**'
+      - 'plugins/hdr_brackets/**'
+      - 'tests/test_hdr_*.cpp'
+      - 'tests/test_eval_split.cpp'
+      - 'tests/CMakeLists.txt'
+      - 'docs/hdr.md'
+      - '.github/workflows/hdr.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: hdr-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # CPU-only runner: the pure-Python side. tools/ (eval metrics, the synthetic camera, the bracket set) and the
+  # plugin's 62 tests need nothing but the tools/ uv environment. What is skipped here, and why, is printed by the
+  # script: test_hdr_ply.py (needs the built binary), test_ldr_reeval.py (needs the binary and the ~1 GB frozen LDR
+  # reference, which lives outside git), ctest -L hdr (the C++ test tree needs CUDA + LibTorch — the hdr-gpu job).
+  hdr-tests:
+    if: github.repository != 'MrNeRF/LichtFeld-Studio'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: tools/uv.lock
+
+      - name: Sync the tools environment
+        run: uv sync --project tools --python 3.12
+
+      - name: Run the HDR tests (CPU)
+        run: tools/run_hdr_tests.sh --no-gpu
+
+  # GPU runner (optional, same gate as upstream's GPU idle E2E): the full set — gtests through ctest -L hdr,
+  # the PLY round trip through the binary, and the LDR bit-exact re-evaluation when the runner has out/baseline_a.
+  # Expects the app and the C++ test tree already built on the runner (CLAUDE.md 'Build & run'): LFS_BUILD_DIR,
+  # LFS_TESTS_BUILD_DIR, LFS_LDR_REFERENCE point at them (repository variables), else the sections skip.
+  hdr-gpu:
+    if: github.repository != 'MrNeRF/LichtFeld-Studio' && vars.LFS_GPU_RUNNER == 'true'
+    runs-on: [self-hosted, linux, gpu]
+    timeout-minutes: 120
+    env:
+      LFS_BUILD_DIR: ${{ vars.LFS_BUILD_DIR }}
+      LFS_TESTS_BUILD_DIR: ${{ vars.LFS_TESTS_BUILD_DIR }}
+      LFS_LDR_REFERENCE: ${{ vars.LFS_LDR_REFERENCE }}
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v7
+
+      - name: Run the HDR tests (GPU)
+        run: tools/run_hdr_tests.sh

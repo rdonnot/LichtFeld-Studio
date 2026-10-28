@@ -611,7 +611,7 @@ reader contract is `docs/hdr.md`.
   `hdr_source_for_ldr_writer` — the gate in `save_spz / save_sog / save_ssog / export_html / save_usd /
   save_nurec_usdz / save_rad` (bake when `mode == BakedLdr`, refuse otherwise). Every option struct carries
   `core::hdr::ExportOptions hdr` (`io/exporter.hpp`).
-- CLI: `HdrExportFlags` in `argument_parser.cpp` (`--hdr-export`, `--hdr-exposure`, `--hdr-tonemap`) on the
+- CLI: `HdrExportFlags` in `argument_parser.cpp` (`--hdr-export`, `--hdr-export-ev`, `--hdr-tonemap`) on the
   training `--export` and on `convert`; `TrainingParameters::hdr_export`, `ConvertParameters::hdr_export`;
   `training_setup.cpp save_final_splat` and `converter.cpp saveSplat` pass it. `--render-exposure`,
   `--render-tonemap`, `--render-exr-dir` on `--render-camera-path` (`RenderPathConfig`); `application.cpp
@@ -649,7 +649,7 @@ reader contract is `docs/hdr.md`.
   **73.5 dB** (71.5–75.9 per view; PSNR vs GT 36.507084, −0.0013 dB); degree-0 copies: linear vs log **145.0 dB**
   (exact), both 33.164474 dB vs GT. The ShN projection costs ~0.001 dB on this scene — far below the training's
   own run-to-run spread.
-- *Baked LDR* (`--hdr-export baked --hdr-exposure 0 --hdr-tonemap aces`): no HDR comments; DC colours in
+- *Baked LDR* (`--hdr-export baked --hdr-export-ev 0 --hdr-tonemap aces`): no HDR comments; DC colours in
   [5.9e-7, 0.99995]; the full degree-3 expansion in [−0.010, 1.006] on 512 directions. Synthetic σ-0.3 lobes show
   the Gibbs overshoot of a band-limited fit of a CLIPPED curve: hard `linear` to 1.12, `neutral` [−0.08, 1.09],
   `aces` [−0.01, 1.03]; viewers clamp the evaluated colour, so this is invisible on screen but it is a property
@@ -726,6 +726,107 @@ reader contract is `docs/hdr.md`.
 - Docs: `docs/hdr.md` (capture guide: bracket spacing, tripod vs. handheld, white balance locked) + plugin README.
 - Rebase on upstream; split into reviewable PRs if offering it back (plugin first, then core flag).
 - Final `hdr-architect` review of the whole diff.
+
+### M6 — implementation notes (hdr-m6, 2026-10-28, from `hdr` at a242dda1c; branch `hdr-m6`, not merged into `hdr`)
+
+**Tests wired — one command, one workflow.**
+- `tests/CMakeLists.txt`: every HDR gtest entry carries the label `hdr` and either `cpu` or `gpu`:
+  `lichtfeld.hdr_display_chain` (cpu), `lichtfeld.hdr_eval_split` (cpu), the new `lichtfeld.hdr_parameters` (cpu:
+  `TrainingParametersTest.*` + `ExplicitTrainingOverridesTest.*`, i.e. the registry coverage, the JSON round trip
+  with the `hdr_*` properties and the golden JSONs in `tests/data/param_json_golden/`), `lichtfeld.hdr_color_chain`
+  (gpu), `lichtfeld.hdr_bracket_stage` (gpu). `ctest -L hdr` runs all five, `ctest -L hdr -LE gpu` the CPU three.
+- `tools/run_hdr_tests.sh [--no-gpu] [--quick]` — the one command. Three sections, each PASS / FAIL / SKIP with
+  its reason, exit 1 only on a FAIL: (1) `tools/` pytest (eval + synth: `test_hdr_metrics`, `test_make_brackets`,
+  `test_hdr_ply` through the binary, and the new `test_ldr_reeval`), (2) the plugin's `tests/` run in the tools
+  environment (`uv run --project tools`, the same dependency set — the plugin's own `.venv` is the one LichtFeld
+  creates at load), (3) `ctest -L hdr` on `LFS_TESTS_BUILD_DIR` (default `build/tests`), `-LE gpu` without a CUDA
+  device. Environment: `LFS_BUILD_DIR`, `LFS_BINARY`, `LFS_TESTS_BUILD_DIR`, `LFS_LDR_REFERENCE`.
+- `tools/eval/test_ldr_reeval.py` — the bit-exact LDR check as a test: runs `ldr_reeval.main` on
+  `$LFS_LDR_REFERENCE/project.licht` (default `out/baseline_a`) and asserts exit 0; **SKIPPED** (marker
+  `ldr_reference`) when the binary or the reference is absent or `LFS_HDR_SKIP_SLOW=1`, FAILED when a metric or a
+  PNG differs. ~25 s on this machine. `out/baseline_a` in this worktree is a symlink to `LichtFeld-HDR/out/baseline_a`.
+- `.github/workflows/hdr.yml` — `hdr-tests` on `ubuntu-24.04`: `uv sync --project tools`, then the script with
+  `--no-gpu` (62 plugin + 26 tools tests run; `test_hdr_ply` and `test_ldr_reeval` skip with their reason;
+  ctest skips: the C++ test tree needs CUDA + LibTorch, which no hosted runner builds in a sane time — upstream's
+  own CUDA build on `ubuntu-24.04` takes the whole job with a warm vcpkg cache and still never builds the test
+  tree). `hdr-gpu` on `[self-hosted, linux, gpu]` behind `vars.LFS_GPU_RUNNER == 'true'` (upstream's gate for its
+  GPU job) runs the whole script against prebuilt trees named by repository variables. Both jobs are
+  `if: github.repository != 'MrNeRF/LichtFeld-Studio'`, triggers are `hdr`/`hdr-*` pushes and PRs touching the
+  HDR paths; upstream's six workflows are untouched.
+- Measured here (RTX A5000 shared, 2026-10-28): `tools pytest` 28 passed (incl. `test_ldr_reeval`: "metrics:
+  identical", "eval PNGs: 16 compared, identical" with the M6 binary, three times during the milestone);
+  `plugin pytest` 62 passed; `ctest -L hdr` 5/5 passed in 3.2 s on this worktree's `build/tests` (62 gtest cases: color chain 3, display chain 6, bracket stage 7, eval split 4, parameters 42); `--no-gpu --quick` runs 3/3 CPU entries and skips `test_ldr_reeval` with its reason. The script end to end: 28 s.
+
+**Fixes found while wiring (each its own commit).**
+- **`--hdr-exposure` was declared twice** on the merged `hdr`: M5's export EV (`HdrExportFlags`, declared first)
+  shadowed M3's `--hdr-exposure exif|learn`, so `--hdr-brackets --hdr-exposure learn` died with "Argument 'ev'
+  received invalid value type 'learn'" — route B's exposure mode could not be set from the CLI since the M5
+  merge (M3's own runs predate it). The export flag is now **`--hdr-export-ev`** (training `--export` and
+  `convert`); `hdr_roundtrip.py`, `test_hdr_ply.py`, the refusal messages and `docs/hdr.md` follow.
+- **Locale gate**: M5 added the export panel's seven `export_dialog.hdr_*` keys to `en.json` only, so upstream's
+  `check_locale_completeness.py` failed on nine locales. Filled (de/fr/es/it/nl/pl translated, ja/ko/zh English, as
+  M4 did); `check_ui_hardcoded.py` and `test_localization_contracts.py` pass.
+- **Error-debt census** (`tools/error_debt_census.py --baseline`, upstream's PR gate; pristine v0.5.4.2 reports 0
+  new): the fork had 51 new entries. 5 were real: kernel launches whose `LFS_CUDA_LAUNCH_CHECK` sat more than
+  three lines after the launch (`hdr_bracket.cu` forward/hat, `forward.cu` preprocess inside `launch_typed`) and two
+  bare `cudaStreamSynchronize` in `hdr_sh.cpp` — moved onto the launch / wrapped in `LFS_CUDA_CHECK_MSG`.
+  **46 `expected-string` remain** (`trainer.{hpp,cpp}` 42, `hdr_bracket_stage.{hpp,cpp}` 4: `std::expected<…,
+  std::string>` returns the fork added, upstream's own "post-campaign workoff" rule) — owed before any upstream PR.
+- `external/libtorch` in the m4/m6 worktree was a RELATIVE symlink one directory too shallow (resolved to
+  `<worktree>/LichtFeld-HDR/external/libtorch`, absent): the test tree's `find_package(Torch)` failed. Replaced by
+  an absolute link (gitignored). `data` at the root was fine.
+
+**Capture guide** — `docs/hdr.md` is now the user guide (§1 shooting a bracket set: tripod vs hand-held and the
+±31 px integer-shift alignment that decides it, 2 EV × 3–5 frames, fixed ISO/aperture/WB, the EXIF tags the
+plugin reads and `exiftool` to check them, JPEG vs RAW, the 5 s gap rule, coverage, the lamp/sun lower-bound rule;
+§2 the two routes with M2's 36.5 dB / +1.4 dB and M3's 0.9 dB gap; §3 panel + CLI; §4 the training flag table;
+§5 the viewer; §6 the export matrix keeps / bakes / refuses; §7 colour management: working space linear
+sRGB/Rec.709, OCIO on branch `hdr-ocio`; §8 the test command). The reader contract of the PLY convention stays
+below it unchanged. This file stays the engineering log.
+
+**Upstream sync — NOT merged, by the rule in the brief (> 2 h; don't half-merge).** `origin/master` (fetched
+2026-10-28, `72b3d7a9e`, tag `model-sam2-video-v1`) is **96 commits / 524 files / +50 237 −5 199** past the merge
+base `v0.5.4.2` (`fac5e497a`). `git merge-tree hdr origin/master` reports **16 conflicting files**:
+`src/python/lfs/py_splat_data.cpp`, `src/python/lfs_plugins/rendering_panel.py`,
+`src/rendering/include/rendering/rendering.hpp`, `…/vulkan/shader/src/slang/utils.slang`, `…/vulkan/src/gs_renderer.h`,
+`src/training/dataset.hpp`, `src/training/rasterization/fast_rasterizer.cpp`, fastgs `backward.h`,
+`kernels_backward.cuh`, `rasterization_api.h`, `backward.cu`, `rasterization_api.cu`, `src/training/trainer.cpp`,
+`src/visualizer/project/session_state.cpp`, `src/visualizer/rendering/rendering_types.hpp`,
+`src/visualizer/rendering/viewport_request_builder.cpp` — i.e. the rasterizer backward, the trainer and the Vulkan
+uniforms, the three places the fork changed most; 71 more files both sides touched merge automatically but
+untested. And upstream changed what the LDR baseline measures: "Fix premature zero opacity gradients at saturated
+logits" (#3803), "Initialize Gaussian scales from neighbour distances" (#3810), "Sharpen training images in the
+dataloader" (#3745 — changes the GT the frozen project is evaluated against), "Compute color variance against the
+rendered pixel color" (#3836), "Fix the SH-rest optimizer capacity units and read q16 SH directly in 3DGUT" (#3863),
+SteadySplats (#3728, #3726), plus the crop-box ROI series — so `ldr_reeval` against `out/baseline_a` would differ for
+legitimate reasons and the reference would have to be regenerated with an unmodified build of the new merge base
+(a full fresh build, 1–2 h at the 4-job cap on this loaded machine) before the merge could be judged. Conflict
+resolution in CUDA kernels + that rebuild + re-measuring M2–M5 is a milestone of its own, not an afternoon.
+Recommended procedure when it is done: merge `origin/master` into a `hdr-sync` branch (never rebase: `hdr` is
+pushed), resolve the 16 keeping both, build, regenerate `out/baseline_<newbase>` with the pristine upstream build
+at the same merge base, then `ldr_reeval` against THAT, then rerun `tools/run_hdr_tests.sh` and the M2/M3 tables.
+Nothing of upstream was merged into `hdr-m6`; its base is still v0.5.4.2.
+
+**State of the fork** (every number measured on the synthetic room unless said; details in each milestone's notes):
+
+| milestone | done | measured | owed |
+|---|---|---|---|
+| M0 baseline & code map | yes | `smoke_ldr` 7000 it: 27.58 ± 0.93 dB (5 runs); frozen `baseline_a` re-evaluates bit-identically | — |
+| M1 bracket plugin | yes | 40/40 positions registered; CRF max 0.143 nats; merge vs truth median 3.9 % / p99 13.3 %; 78 s | GUI panel never exercised headless; >150-image matcher branch untested; Cancel only disables the button; real hand-held capture |
+| M2 linear HDR core | yes | 36.5 dB μ-law @7000 it; vs proxy-trained +1.39 dB (merge) / +1.08 dB (truth) / +1.94 dB LDR at source EVs; LDR bit-identical | — |
+| M3 bracket training | built, Done-when **not met** | best 31.27 vs M2 32.15 dB LDR PSNR (−0.9 dB, from −1.8); μ-law vs truth 34.0 (above M2's 33.1); `exif` ≈ `learn` | the 0.9 dB (more iterations or the merge as a prior); handheld/ghosting case where it should win is unmeasured (no real capture) |
+| M4 viewer tone mapping | yes | viewer vs fastgs 38.3–51.3 dB over 15 renders; frame time within 1 % of LDR; LDR pixels within the Vulkan run-to-run floor; no banding | mixed HDR + LDR nodes; selection overlay drifts with EV; `display_color.inc` location |
+| M5 export & interop | yes | PLY round trip: log 126.3 dB, linear 73.5–74.1 dB (−0.001 dB vs GT), degree 0 exact; baked in [0, 1]; N'Brain's two readers decode both; SPZ/SOG/… refuse unless baked | export panel in a GUI; USD/NuRec as float radiance; Houdini / vk_gaussian_splatting not run here |
+| M6 polish & upstream-ability | tests + guide + gates done; **upstream sync deferred** | 28 + 62 Python tests, 5/5 ctest entries = 62 gtest cases, all green; locale / io-discipline / cuda-log gates green; census 51 → 46 (all `expected-string`) | the merge of upstream master (16 conflicts, new LDR reference); 46 `expected-string`; a final `hdr-architect` review of the whole diff; splitting into PRs (plugin first) |
+
+**The full test command** (this worktree; `build/tests` configured with `-DBUILD_TESTS=ON` and
+`-DVCPKG_INSTALLED_DIR=…/LichtFeld-HDR/build/tests/vcpkg_installed` to reuse the installed ports):
+
+```bash
+cd ~/Documents/Studio/apps/LichtFeld/LichtFeld-HDR-m4 && tools/run_hdr_tests.sh          # everything; --no-gpu / --quick
+ctest --test-dir build/tests -L hdr --output-on-failure                                    # the gtests alone
+cd tools && uv run python -m pytest -q eval/test_ldr_reeval.py                             # the LDR guarantee alone
+```
 
 ---
 
