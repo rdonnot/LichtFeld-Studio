@@ -11,6 +11,8 @@
 #include <cmath>
 #include <cuda_runtime.h>
 #include <format>
+#include <map>
+#include <mutex>
 #include <numbers>
 #include <stdexcept>
 #include <vector>
@@ -20,7 +22,7 @@ namespace lfs::core::hdr {
     // ── Options ──────────────────────────────────────────────────────────────────────────────────
 
     namespace {
-        constexpr std::array<std::pair<std::string_view, ToneOperator>, 7> kToneNames{{
+        constexpr std::array<std::pair<std::string_view, ToneOperator>, 8> kToneNames{{
             {"none", ToneOperator::None},
             {"linear", ToneOperator::Linear},
             {"filmic", ToneOperator::Filmic},
@@ -28,6 +30,7 @@ namespace lfs::core::hdr {
             {"aces", ToneOperator::Aces},
             {"aces2", ToneOperator::Aces2},
             {"neutral", ToneOperator::Neutral},
+            {"ocio", ToneOperator::Ocio},
         }};
         constexpr std::array<std::pair<std::string_view, ExportMode>, 4> kModeNames{{
             {"auto", ExportMode::Auto},
@@ -232,9 +235,36 @@ namespace lfs::core::hdr {
 
         constexpr size_t kChunk = 65536;
 
+        // The OCIO display LUT on the device (core/ocio.hpp), cached by its key. Throws when OCIO cannot build it:
+        // the CLI / Python validate the selection before any bake, so this is the rare path.
+        struct DeviceLut {
+            Tensor data; // [3 * size^3] float32 CUDA
+            cuda::OcioLutRef ref;
+        };
+        DeviceLut device_lut(const ocio::Selection& selection) {
+            static std::mutex mutex;
+            static std::map<std::string, DeviceLut> cache;
+            std::string error;
+            const auto lut = ocio::lut_for(selection, ocio::kDefaultLutSize, &error);
+            if (!lut)
+                throw std::runtime_error(std::format("HDR bake through OCIO is not possible: {}", error));
+            std::lock_guard lock(mutex);
+            if (auto it = cache.find(lut->key); it != cache.end())
+                return it->second;
+            DeviceLut d;
+            d.data = Tensor::from_vector(lut->rgb, TensorShape{lut->rgb.size()}, Device::CUDA);
+            d.ref = cuda::OcioLutRef{d.data.ptr<float>(), lut->size, lut->log2_lo, lut->log2_hi};
+            cache[lut->key] = d;
+            LOG_INFO("HDR: OCIO display LUT on the device ({}^3, config '{}')", lut->size, lut->config);
+            return d;
+        }
+
         // The shared pipeline: evaluate b on the sphere, apply the per-direction function, project back.
         ShPair project(const Tensor& sh0_in, const Tensor& shN_in, const int mode, const float color_max,
-                       const float exposure, const ToneOperator tone) {
+                       const float exposure, const ToneOperator tone, const ocio::Selection* ocio_selection = nullptr) {
+            DeviceLut lut;
+            if (tone == ToneOperator::Ocio && mode == 2)
+                lut = device_lut(ocio_selection ? *ocio_selection : ocio::Selection{});
             if (!sh0_in.is_valid() || sh0_in.numel() == 0)
                 return {sh0_in, shN_in};
             if (sh0_in.ndim() != 3 || sh0_in.size(2) != 3 || sh0_in.size(1) != 1)
@@ -264,7 +294,7 @@ namespace lfs::core::hdr {
                 Tensor values = X.mm(proj.basis).contiguous(); // [n*3, D]
                 // mode 1 (linear -> log) floors each direction at 1 % of the splat's DC: X's column 0, row stride B.
                 cuda::apply_per_direction(values.ptr<float>(), n, static_cast<size_t>(proj.D), mode, color_max, exposure,
-                                          static_cast<int>(tone), values.stream(), X.ptr<float>(), B);
+                                          static_cast<int>(tone), values.stream(), X.ptr<float>(), B, lut.ref);
                 cudaStreamSynchronize(values.stream());
                 Tensor A = values.mm(proj.pinv_t); // [n*3, B]
                 Tensor A3 = A.reshape(TensorShape{n, 3, B}).permute({0, 2, 1}).contiguous(); // [n, B, 3]
@@ -290,8 +320,8 @@ namespace lfs::core::hdr {
     }
 
     ShPair bake_log_sh_to_display(const Tensor& sh0, const Tensor& shN_canonical, const float color_max,
-                                  const float exposure, const ToneOperator tone) {
-        return project(sh0, shN_canonical, 2, color_max, exposure, tone);
+                                  const float exposure, const ToneOperator tone, const ocio::Selection& ocio) {
+        return project(sh0, shN_canonical, 2, color_max, exposure, tone, &ocio);
     }
 
     float display_exposure(const SplatData::HdrState& state, const float exposure_ev) {
@@ -300,13 +330,16 @@ namespace lfs::core::hdr {
     }
 
     Tensor display_image(const Tensor& linear_chw, const SplatData::HdrState& state, const float exposure_ev,
-                         const ToneOperator tone) {
+                         const ToneOperator tone, const ocio::Selection& ocio) {
         if (!linear_chw.is_valid() || linear_chw.ndim() != 3 || linear_chw.size(0) != 3)
             throw std::invalid_argument(std::format("display_image: expected [3, H, W], got {}", linear_chw.shape().str()));
         const size_t h = static_cast<size_t>(linear_chw.size(1)), w = static_cast<size_t>(linear_chw.size(2));
+        DeviceLut lut;
+        if (tone == ToneOperator::Ocio)
+            lut = device_lut(ocio);
         Tensor hwc = linear_chw.to(Device::CUDA).to(DataType::Float32).permute({1, 2, 0}).contiguous(); // [H, W, 3]
         cuda::apply_per_direction(hwc.ptr<float>(), h * w, 1, 3, 0.0f, display_exposure(state, exposure_ev),
-                                  static_cast<int>(tone), hwc.stream());
+                                  static_cast<int>(tone), hwc.stream(), nullptr, 1, lut.ref);
         cudaStreamSynchronize(hwc.stream());
         return hwc.permute({2, 0, 1}).contiguous();
     }
@@ -324,14 +357,21 @@ namespace lfs::core::hdr {
         return copy;
     }
 
-    SplatData bake_hdr_to_ldr(const SplatData& source, const float exposure_ev, const ToneOperator tone) {
+    SplatData bake_hdr_to_ldr(const SplatData& source, const float exposure_ev, const ToneOperator tone,
+                              const ocio::Selection& ocio) {
         if (!source.is_hdr())
             return source.clone();
         const auto& state = source.hdr();
         const float exposure = display_exposure(state, exposure_ev);
+        std::string tone_desc(tone_operator_name(tone));
+        if (tone == ToneOperator::Ocio) {
+            const auto sel = ocio::resolve(ocio);
+            tone_desc = std::format("ocio '{}' / '{}'{} (config '{}')", sel.display, sel.view,
+                                    sel.look.empty() ? "" : std::format(" + look '{}'", sel.look), ocio::config_name(sel));
+        }
         LOG_INFO("HDR: baking {} splats to LDR at {:+.2f} EV (exposure {:.4g} = 2^EV / s, s = {}), tone {}",
-                 source.size(), exposure_ev, exposure, state.scale, tone_operator_name(tone));
-        const ShPair baked = bake_log_sh_to_display(source.sh0(), source.shN_canonical(), state.color_max, exposure, tone);
+                 source.size(), exposure_ev, exposure, state.scale, tone_desc);
+        const ShPair baked = bake_log_sh_to_display(source.sh0(), source.shN_canonical(), state.color_max, exposure, tone, ocio);
         return with_sh(source, baked, SplatData::HdrState{});
     }
 

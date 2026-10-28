@@ -85,7 +85,20 @@ def _write_exr_local(path: str, rgb_float32: np.ndarray) -> None:
     if rgb.ndim != 3 or rgb.shape[2] != 3:
         raise ValueError(f"write_exr wants HxWx3, got {rgb.shape}")
     header = {"compression": OpenEXR.ZIP_COMPRESSION, "type": OpenEXR.scanlineimage}
+    header.update(exr_colorspace_header())
     OpenEXR.File(header, {"RGB": rgb}).write(str(path))
+
+
+def exr_colorspace_header() -> dict:
+    """The working-space declaration every LichtFeld EXR carries (docs/hdr.md "Colour management"):
+    Rec.709 / sRGB primaries, D65 as the standard `chromaticities`, and `lichtfeld_colorspace lin_srgb`."""
+    try:
+        import OpenEXR
+
+        chroma = OpenEXR.Chromaticities((0.64, 0.33), (0.30, 0.60), (0.15, 0.06), (0.3127, 0.3290))
+    except Exception:  # an older binding without the type: the string attribute still says it
+        return {"lichtfeld_colorspace": "lin_srgb"}
+    return {"chromaticities": chroma, "lichtfeld_colorspace": "lin_srgb"}
 
 
 def read_exr(path: str | os.PathLike) -> np.ndarray:

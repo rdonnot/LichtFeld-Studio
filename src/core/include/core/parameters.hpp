@@ -601,8 +601,11 @@ namespace lfs::core {
             // HDR scenes (docs/hdr.md): the video is tone-mapped at exposure_ev (EV relative to 1/s) with `tone`
             // (display_color.inc index); exr_dir, when set, receives every frame as a linear EXR as well.
             float exposure_ev = 0.0f;
-            int tone = 4; // aces
+            int tone = 4; // aces; 7 = ocio (ocio_display / ocio_view / ocio_look, empty = the process default)
             std::filesystem::path exr_dir;
+            std::string ocio_display;
+            std::string ocio_view;
+            std::string ocio_look;
         };
 
         struct TrainingParameters;

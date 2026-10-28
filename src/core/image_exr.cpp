@@ -3,6 +3,7 @@
 
 #include "image_exr.hpp"
 #include "core/native_fs.hpp"
+#include "core/ocio.hpp"
 #include "core/path_utils.hpp"
 
 #include <OpenEXR/openexr.h>
@@ -112,6 +113,7 @@ namespace lfs::core::image_codecs {
             int width = 0;
             int height = 0;
             bool grayscale = false;
+            std::string colorspace; // `lichtfeld_colorspace` attribute; empty = lin_srgb (docs/hdr.md)
             int source_channels = 0;
             std::array<int, 4> channels{-1, -1, -1, -1};
         };
@@ -168,6 +170,13 @@ namespace lfs::core::image_codecs {
             // Preserve LoadEXR's contract: a single channel is replicated to RGBA;
             // otherwise select the unlayered RGB channels and optional alpha.
             header.grayscale = channels->num_channels == 1;
+            {
+                int32_t length = 0;
+                const char* value = nullptr;
+                if (exr_attr_get_string(context.value, 0, "lichtfeld_colorspace", &length, &value) == EXR_ERR_SUCCESS &&
+                    value != nullptr && length > 0)
+                    header.colorspace.assign(value, static_cast<size_t>(length));
+            }
             constexpr std::array<const char*, 4> names{"R", "G", "B", "A"};
             for (int i = 0; i < channels->num_channels; ++i) {
                 for (int c = 0; c < 4; ++c) {
@@ -381,6 +390,24 @@ namespace lfs::core::image_codecs {
             for (size_t i = 0; i < image.data.size() / sizeof(float); i += 4)
                 pixels[i + 1] = pixels[i + 2] = pixels[i + 3] = pixels[i];
         }
+        // A declared colorspace other than the working space is converted through OCIO's 3x3 (linear spaces
+        // only); a non-linear or unknown one is refused rather than trained on as if it were lin_srgb.
+        if (!header.colorspace.empty() && header.colorspace != ocio::kWorkingSpaceTag) {
+            std::string ocio_error;
+            const auto matrix = ocio::linear_matrix(header.colorspace, ocio::kWorkingSpaceTag, ocio::current(), &ocio_error);
+            if (!matrix) {
+                error = "EXR: lichtfeld_colorspace '" + header.colorspace + "' cannot be converted to " +
+                        std::string(ocio::kWorkingSpaceTag) + " (" + ocio_error + ")";
+                return false;
+            }
+            const glm::mat3& m = *matrix;
+            for (size_t i = 0; i < image.data.size() / sizeof(float); i += 4) {
+                const glm::vec3 c = m * glm::vec3(pixels[i], pixels[i + 1], pixels[i + 2]);
+                pixels[i] = c.r;
+                pixels[i + 1] = c.g;
+                pixels[i + 2] = c.b;
+            }
+        }
         result = std::move(image);
         return true;
     }
@@ -404,6 +431,14 @@ namespace lfs::core::image_codecs {
             // Scene-linear radiance: pLinear = 0 (EXR_PERCEPTUALLY_LOGARITHMIC), OpenEXR's convention for RGB.
             if (!check(exr_add_channel(context.value, part, channel, EXR_PIXEL_FLOAT, EXR_PERCEPTUALLY_LOGARITHMIC, 1, 1),
                        error))
+                return false;
+        }
+        // The working space, declared the standard way (Rec.709 / sRGB primaries, D65) and by name
+        // (docs/hdr.md "Colour management"): every EXR LichtFeld writes is scene-linear lin_srgb.
+        {
+            const exr_attr_chromaticities_t rec709{0.64f, 0.33f, 0.30f, 0.60f, 0.15f, 0.06f, 0.3127f, 0.3290f};
+            if (!check(exr_attr_set_chromaticities(context.value, part, "chromaticities", &rec709), error) ||
+                !check(exr_attr_set_string(context.value, part, "lichtfeld_colorspace", std::string(ocio::kWorkingSpaceTag).c_str()), error))
                 return false;
         }
         const exr_attr_chlist_t* channels = nullptr;

@@ -40,8 +40,10 @@ namespace lfs::core::hdr {
 
     // Log SH -> display-referred sRGB-encoded colour in [0,1] as standard SH:
     // srgb(tone(exposure * exp(min(b, ln cmax)))) per direction, then the projection.
+    // tone == Ocio: the display/view/look of `ocio` (empty fields = core::ocio::current()) baked as a LUT.
     LFS_CORE_API ShPair bake_log_sh_to_display(const Tensor& sh0, const Tensor& shN_canonical,
-                                               float color_max, float exposure, ToneOperator tone);
+                                               float color_max, float exposure, ToneOperator tone,
+                                               const ocio::Selection& ocio = {});
 
     // Display exposure for an HDR state: 2^ev / s (s = P99 luminance of the training images; the
     // scene's natural exposure is 1/s). An unknown s (0) counts as 1.
@@ -53,7 +55,8 @@ namespace lfs::core::hdr {
 
     // The baked LDR clone every writer can use: an LDR model (is_hdr() == false) that any viewer shows
     // at `exposure_ev` through `tone`. An LDR input is returned as a plain clone.
-    LFS_CORE_API SplatData bake_hdr_to_ldr(const SplatData& source, float exposure_ev, ToneOperator tone);
+    LFS_CORE_API SplatData bake_hdr_to_ldr(const SplatData& source, float exposure_ev, ToneOperator tone,
+                                           const ocio::Selection& ocio = {});
 
     // Linear-radiance clone for the PLY writer (is_hdr() == false on the copy: the values are no
     // longer log; the caller writes the lichtfeld_hdr header from the source's state).
@@ -62,7 +65,7 @@ namespace lfs::core::hdr {
     // A rendered LINEAR image [3, H, W] (CUDA float) -> display-referred sRGB in [0, 1], same shape:
     // srgb(tone(2^ev / s * radiance)) through the viewer's own curves. What the baked LDR export shows.
     LFS_CORE_API Tensor display_image(const Tensor& linear_chw, const SplatData::HdrState& state, float exposure_ev,
-                                      ToneOperator tone);
+                                      ToneOperator tone, const ocio::Selection& ocio = {});
 
     // Evaluate the real SH basis in the fastgs ordering/signs for one unit direction:
     // out[0] = 1 (the DC carrier), out[1..K] = Y_1..Y_K. K in {0, 3, 8, 15}.

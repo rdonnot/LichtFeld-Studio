@@ -18,11 +18,20 @@
 //   mode 2  bake:             rgb = srgb_oetf(tone(exposure * linear(v))) clamped to [0, 1]
 //   mode 3  display:          as mode 2 but v is ALREADY linear radiance (a rendered image: n_splats = pixels,
 //                             directions = 1, HWC interleaved)
-// color_max <= 0 means no cap. `tone` indexes the viewer's display_color.inc operators (0 = none).
+// color_max <= 0 means no cap. `tone` indexes the viewer's display_color.inc operators (0 = none);
+// tone 7 (OCIO) samples the baked display LUT `ocio_lut` (device memory, core/ocio.hpp Lut3D layout,
+// lut_size^3 nodes over the log2 shaper lut_lo..lut_hi) on exposure * linear(v) — null falls back to tone 4.
 namespace lfs::core::hdr::cuda {
+
+    struct OcioLutRef {
+        const float* data = nullptr;
+        int size = 0;
+        float log2_lo = 0.0f;
+        float log2_hi = 0.0f;
+    };
 
     void apply_per_direction(float* values, std::size_t n_splats, std::size_t directions, int mode,
                              float color_max, float exposure, int tone, cudaStream_t stream,
-                             const float* dc = nullptr, std::size_t dc_stride = 1);
+                             const float* dc = nullptr, std::size_t dc_stride = 1, OcioLutRef ocio_lut = {});
 
 } // namespace lfs::core::hdr::cuda

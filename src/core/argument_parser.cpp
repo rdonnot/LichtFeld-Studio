@@ -8,6 +8,7 @@
 #include "core/hdr_export_options.hpp"
 #include "core/logger.hpp"
 #include "core/native_fs.hpp"
+#include "core/ocio.hpp"
 #include "core/optimization_properties.hpp"
 #include "core/parameters.hpp"
 #include "core/path_utils.hpp"
@@ -534,11 +535,36 @@ namespace {
     struct HdrExportFlags {
         ::args::ValueFlag<std::string> mode, tonemap;
         ::args::ValueFlag<float> exposure;
+        ::args::ValueFlag<std::string> ocio_config, ocio_display, ocio_view, ocio_look;
 
         explicit HdrExportFlags(::args::Group& group)
             : mode(group, "mode", "HDR models only: how the exported files hold colour. linear = linear-radiance SH with the lichtfeld_hdr header (PLY default, read by any splat tool); baked = display-referred LDR at --hdr-exposure through --hdr-tonemap, opens in any viewer (required for sog, ssog, spz, glb, html, usd, rad); log = the internal log SH (PLY only, LichtFeld reads it back losslessly)", {"hdr-export"}),
-              tonemap(group, "operator", "Tone operator for --hdr-export baked: none, linear, filmic, hejl, aces (default), aces2, neutral", {"hdr-tonemap"}),
-              exposure(group, "ev", "Exposure for --hdr-export baked, in EV relative to the scene's natural exposure 1/s (default 0)", {"hdr-exposure"}) {}
+              tonemap(group, "operator", "Tone operator for --hdr-export baked: none, linear, filmic, hejl, aces (default), aces2, neutral, ocio (an OpenColorIO display/view: --ocio-display/--ocio-view/--ocio-look)", {"hdr-tonemap"}),
+              exposure(group, "ev", "Exposure for --hdr-export baked, in EV relative to the scene's natural exposure 1/s (default 0)", {"hdr-exposure"}),
+              ocio_config(group, "path", "OpenColorIO config file (default: $OCIO, else the built-in ACES studio config). Also decides how a foreign lichtfeld_colorspace is read", {"ocio"}),
+              ocio_display(group, "display", "OCIO display for tone 'ocio' (default: the config's default display)", {"ocio-display"}),
+              ocio_view(group, "view", "OCIO view for tone 'ocio' (default: the display's default view)", {"ocio-view"}),
+              ocio_look(group, "look", "OCIO look applied before the view for tone 'ocio' (default: none)", {"ocio-look"}) {}
+
+        // The --ocio* flags become the process default (core::ocio::current()) as well: a bake, the EXR reader
+        // and the viewer in this process agree on the config. Returns the message on an invalid name.
+        std::optional<std::string> read_ocio(lfs::core::ocio::Selection& selection, const bool validate_display) {
+            if (ocio_config)
+                selection.config_path = ::args::get(ocio_config);
+            if (ocio_display)
+                selection.display = ::args::get(ocio_display);
+            if (ocio_view)
+                selection.view = ::args::get(ocio_view);
+            if (ocio_look)
+                selection.look = ::args::get(ocio_look);
+            if (ocio_config || ocio_display || ocio_view || ocio_look || validate_display) {
+                std::string error;
+                if (!lfs::core::ocio::available(selection, &error))
+                    return std::format("OpenColorIO: {}", error);
+                lfs::core::ocio::set_current(selection);
+            }
+            return std::nullopt;
+        }
 
         std::optional<std::string> read(lfs::core::hdr::ExportOptions& options) {
             if (mode) {
@@ -559,6 +585,8 @@ namespace {
                     return std::format("Invalid --hdr-exposure {}: expected a finite EV in [-30, 30]", ev);
                 options.exposure_ev = ev;
             }
+            if (const auto error = read_ocio(options.ocio, options.tone == lfs::core::hdr::ToneOperator::Ocio))
+                return error;
             return std::nullopt;
         }
     };
@@ -824,7 +852,7 @@ namespace {
             ::args::ValueFlag<int> render_height(render_path_group, "height", "Output height (default 1080)", {"render-height"});
             ::args::ValueFlag<int> render_fps(render_path_group, "fps", "Output framerate (default 30)", {"render-fps"});
             ::args::ValueFlag<float> render_exposure(render_path_group, "ev", "HDR scenes: video exposure in EV relative to the scene's natural exposure 1/s (default 0)", {"render-exposure"});
-            ::args::ValueFlag<std::string> render_tonemap(render_path_group, "operator", "HDR scenes: tone operator for the video: none, linear, filmic, hejl, aces (default), aces2, neutral", {"render-tonemap"});
+            ::args::ValueFlag<std::string> render_tonemap(render_path_group, "operator", "HDR scenes: tone operator for the video: none, linear, filmic, hejl, aces (default), aces2, neutral, ocio (--ocio-display/--ocio-view/--ocio-look)", {"render-tonemap"});
             ::args::ValueFlag<std::string> render_exr_dir(render_path_group, "dir", "Also write every frame as a linear EXR (frame_NNNNNN.exr) into this folder; the untouched radiance of an HDR scene", {"render-exr-dir"});
             ::args::ValueFlag<int> render_crf(render_path_group, "crf", "Video quality, lower=better (default 18)", {"render-crf"});
             ::args::Group render_path_provenance_note(render_path_group, "  Metadata: videos always embed a minimal build stamp; --no-provenance strips identifying metadata");
@@ -1267,6 +1295,14 @@ namespace {
                 }
                 if (render_exr_dir) {
                     cfg.exr_dir = lfs::core::utf8_to_path(::args::get(render_exr_dir));
+                }
+                {
+                    lfs::core::ocio::Selection selection;
+                    if (const auto error = hdr_export_flags.read_ocio(selection, cfg.tone == static_cast<int>(lfs::core::hdr::ToneOperator::Ocio)))
+                        return std::unexpected(*error);
+                    cfg.ocio_display = selection.display;
+                    cfg.ocio_view = selection.view;
+                    cfg.ocio_look = selection.look;
                 }
                 if (render_crf) {
                     cfg.crf = ::args::get(render_crf);
