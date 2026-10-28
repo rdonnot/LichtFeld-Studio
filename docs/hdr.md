@@ -340,9 +340,23 @@ file is **refused** with the reason, never read as if it were `lin_srgb`. No tag
 **What to assign in another application.** A LichtFeld HDR PLY or EXR is `Linear Rec.709 (sRGB)` in the
 ACES 1.3 / 2.0 configs (`lin_srgb`), `scene_linear` / `linear` in a legacy config:
 
-- *Houdini* (OCIO on, Karma / Solaris): set the file's colorspace to **Linear Rec.709 (sRGB)** when importing
-  the EXR as a texture or the PLY's colour attribute; Houdini's own default config is the same ACES CG config,
-  so an EXR with these chromaticities is picked up as linear Rec.709 automatically.
+- *Houdini 22* (verified 22.0.466, 2026-10-28; scripts and renders in `out/verify_readers/houdini/`): the File SOP
+  reads every float bit-exactly and the **Bake GSplats** SOP (`bakegsplat`) turns `f_dc` into `Cd` = linear
+  radiance (23 212 at the synthetic lamp, as in the file). Its OCIO config is the same ACES CG config: `lin_srgb`
+  is an alias of **Linear Rec.709 (sRGB)** and `scene_linear` → `lin_srgb` is a no-op, so nothing is converted.
+  Four non-defaults are needed:
+  1. Bake GSplats **Linearize Color OFF** (`linearize` = 0; ON treats the values as sRGB-encoded → 2.6e10).
+  2. **Compute SH** (`sphcoeff`) only if you want the view-dependent bands; Karma XPU's `GS_SPH` path did not
+     reproduce standard SH for this model (2–10× too bright, also at LDR range), so use degree 0 (`Cd` only)
+     until SideFX's convention is pinned — a degree-0 render of the held-out view matched LichtFeld's at
+     29.2 dB μ-law PSNR, luminance ratio 0.88 median.
+  3. Raise `karma:global:colorlimit` and `colorlimitindirect` (default 10 clips the beauty).
+  4. **Karma XPU clips splat colour at ≈ 346 per channel** (half precision) whatever the colour limit: divide
+     `Cd` by `hdr_scale` in a wrangle (`@Cd *= 1.0/<hdr_scale>;`) and multiply the EXR back; `hdr_scale` is in
+     the PLY header. Karma CPU draws only a point cloud.
+  Render with `husk -R BRAY_HdKarmaXPU --gpu` on a USD ROP export (the Karma LOP's `engine=xpu` did not reach the
+  ROP headless); its EXR is tagged `lin_rec709`, its PNG is the config's default view (sRGB - Display /
+  Un-tone-mapped, no tone curve). The camera: `c2w = inv(COLMAP w2c) · diag(1,−1,−1,1)`, focal 36·fx/W mm.
 - *Nuke*: Read node **colorspace = Linear Rec.709 (sRGB)** (ACES configs) or `linear` (nuke-default); the
   `chromaticities` attribute does not drive Nuke's input transform, the Read node does.
 - *DaVinci Resolve* (ACES or RCM): EXR input colour space **Linear**, gamut **Rec.709** (in ACES: "Linear
