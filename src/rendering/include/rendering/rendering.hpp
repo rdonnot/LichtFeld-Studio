@@ -211,6 +211,11 @@ namespace lfs::rendering {
         bool hdr_display = true;
         float hdr_exposure_ev = 0.0f;
         bool hdr_false_color = false;
+        // OCIO display (color_tonemapping == 7, HDR models): display / view / look of the current config
+        // (empty = the config's defaults / no look). docs/hdr.md "Colour management".
+        std::string ocio_display;
+        std::string ocio_view;
+        std::string ocio_look;
 
         float scaling_modifier = 1.0f;
         bool antialiasing = false;

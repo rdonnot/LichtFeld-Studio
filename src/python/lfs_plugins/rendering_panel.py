@@ -146,6 +146,7 @@ SCRUB_FIELD_DEFS = {
 
 SELECT_PROPS = [
     "grid_plane", "sh_degree", "raster_backend", "camera_metrics_mode", "mesh_shadow_resolution", "color_tonemapping",
+    "ocio_display", "ocio_view", "ocio_look",
 ]
 RASTER_BACKENDS = {"3dgs", "3dgut"}
 
@@ -217,6 +218,9 @@ LOCALE_KEY = {
     "hdr_exposure_ev": "main_panel.hdr_exposure_ev",
     "hdr_false_color": "main_panel.hdr_false_color",
     "hdr_display": "main_panel.hdr_display",
+    "ocio_display": "main_panel.ocio_display",
+    "ocio_view": "main_panel.ocio_view",
+    "ocio_look": "main_panel.ocio_look",
     "environment_exposure": "main_panel.environment_exposure",
     "environment_rotation_degrees": "main_panel.environment_rotation",
     "camera_metrics_mode": "main_panel.camera_metrics",
@@ -336,6 +340,8 @@ class RenderingPanel(Panel):
         self._selection_groups = SelectionGroupsSection(self._show_group_color_picker)
         self._hdr_model = False
         self._hdr_model_checked_at = 0.0
+        # OCIO (docs/hdr.md): the option lists of the three selects, rebuilt when the display changes.
+        self._ocio_lists_key = None
         self._collapsed = set(RENDERING_INITIALLY_COLLAPSED)
         self._popup_el = None
         self._doc = None
@@ -506,6 +512,11 @@ class RenderingPanel(Panel):
 
         model.bind_func("mesh_wireframe_supported", _mesh_wireframe_supported)
         model.bind_func("hdr_model", lambda: bool(self._hdr_model))
+        model.bind_func("ocio_config_name", self._ocio_config_name)
+        if hasattr(model, "bind_record_list"):
+            model.bind_record_list("ocio_displays")
+            model.bind_record_list("ocio_views")
+            model.bind_record_list("ocio_looks")
         model.bind_func("mesh_wide_lines_supported", _mesh_wide_lines_supported)
 
         all_props = BOOL_PROPS + SLIDER_PROPS + SELECT_PROPS + [
@@ -674,6 +685,7 @@ class RenderingPanel(Panel):
 
         dirty = False
         dirty |= self._refresh_hdr_model()
+        dirty |= self._refresh_ocio_lists()
         if not getattr(s, "selection_outline", False) and self._color_edit_prop == "selection_outline_color":
             self._hide_picker()
             dirty = True
@@ -712,6 +724,42 @@ class RenderingPanel(Panel):
         self._hdr_model = value
         if self._handle:
             self._handle.dirty("hdr_model")
+        return True
+
+    # ── OCIO (docs/hdr.md "Colour management") ─────────────────────────────────────────────────────────────
+    def _ocio_config_name(self):
+        try:
+            return str(lf.io.ocio_config_name() or "")
+        except Exception:
+            return ""
+
+    def _refresh_ocio_lists(self):
+        """Rebuild the display / view / look option lists when the OCIO selects are visible and the display changed."""
+        if not self._handle or not self._hdr_model:
+            return False
+        s = lf.get_render_settings()
+        if not s or str(getattr(s, "color_tonemapping", "")) != "ocio":
+            return False
+        display = str(getattr(s, "ocio_display", "") or "")
+        key = (self._ocio_config_name(), display)
+        if key == self._ocio_lists_key:
+            return False
+        self._ocio_lists_key = key
+        try:
+            displays = list(lf.io.ocio_displays())
+            views = list(lf.io.ocio_views(display))
+            looks = list(lf.io.ocio_looks())
+        except Exception as exc:  # pragma: no cover - OCIO missing or a broken config
+            lf.log.warn(f"OCIO lists unavailable: {exc}")
+            displays, views, looks = [], [], []
+        default_label = lf.ui.tr("main_panel.ocio_default") or "Default"
+        self._handle.update_record_list(
+            "ocio_displays", [{"value": "", "label": default_label}] + [{"value": d, "label": d} for d in displays])
+        self._handle.update_record_list(
+            "ocio_views", [{"value": "", "label": default_label}] + [{"value": v, "label": v} for v in views])
+        none_label = lf.ui.tr("export.none") or "None"
+        self._handle.update_record_list(
+            "ocio_looks", [{"value": "", "label": none_label}] + [{"value": l, "label": l} for l in looks])
         return True
 
     def _environment_state_snapshot(self):

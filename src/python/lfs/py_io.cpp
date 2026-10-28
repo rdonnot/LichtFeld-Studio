@@ -18,6 +18,7 @@
 
 #include "core/camera.hpp"
 #include "core/hdr_export_options.hpp"
+#include "core/ocio.hpp"
 #include "core/image_io.hpp"
 #include "core/logger.hpp"
 #include "core/native_fs.hpp"
@@ -344,6 +345,40 @@ namespace lfs::python {
     } // namespace
     void register_io(nb::module_& m) {
         namespace project = io::project;
+
+        // OpenColorIO (docs/hdr.md "Colour management"): what the current config offers, and the process-wide
+        // default selection that tone "ocio" uses when a call leaves display / view / look empty.
+        m.def("ocio_available", []() { return core::ocio::available(); },
+              "True when the OCIO config (--ocio, $OCIO or the built-in ACES studio config) loads.");
+        m.def("ocio_config_name", []() { return core::ocio::config_name(); }, "Name of the current OCIO config.");
+        m.def("ocio_working_space", []() { return core::ocio::working_space(); },
+              "The config's name for LichtFeld's working space lin_srgb (Linear Rec.709 / sRGB primaries, D65).");
+        m.def("ocio_displays", []() { return core::ocio::displays(); }, "Display names of the current OCIO config.");
+        m.def("ocio_views", [](const std::string& display) { return core::ocio::views(core::ocio::current(), display); },
+              nb::arg("display") = "", "View names of a display (default: the current / default display).");
+        m.def("ocio_looks", []() { return core::ocio::looks(); }, "Look names of the current OCIO config.");
+        m.def("get_ocio", []() {
+                  const auto s = core::ocio::resolve(core::ocio::current());
+                  nb::dict d;
+                  d["config"] = s.config_path;
+                  d["config_name"] = core::ocio::config_name(s);
+                  d["display"] = s.display;
+                  d["view"] = s.view;
+                  d["look"] = s.look;
+                  return d;
+              },
+              "The resolved process-wide OCIO selection: config path (empty = $OCIO / built-in), display, view, look.");
+        m.def("set_ocio", [](const std::string& config, const std::string& display, const std::string& view, const std::string& look) {
+                  core::ocio::Selection s{config, display, view, look};
+                  std::string error;
+                  const auto resolved = core::ocio::validate(s, &error);
+                  if (!resolved)
+                      throw_invalid_io_argument(error);
+                  core::ocio::set_current(s);
+                  return *resolved == core::ocio::Selection{} ? std::string{} : resolved->display + " / " + resolved->view;
+              },
+              nb::arg("config") = "", nb::arg("display") = "", nb::arg("view") = "", nb::arg("look") = "",
+              "Set the process-wide OCIO selection (what tone 'ocio' bakes and the viewer shows); empty fields keep the current value, look='none' clears the look. Raises on an unknown name.");
         m.def("native_path", [](const std::filesystem::path& path, const bool force_extended) { return core::path_to_utf8(core::native_fs::native_path(path, force_extended)); }, nb::arg("path"), nb::arg("force_extended") = false, "Return a filename for filesystem I/O, including extended Windows paths. "
                                                                                                                                                                                                                                       "Use force_extended for recursive operations. Keep the original path for UI, JSON and external commands.");
 

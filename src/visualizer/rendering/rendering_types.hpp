@@ -330,6 +330,10 @@ namespace lfs::vis {
         bool hdr_display = true;
         float hdr_exposure_ev = 0.0f;
         bool hdr_false_color = false;
+        // OCIO display (color_tonemapping 7 = "ocio"): display / view / look names of the OCIO config.
+        std::string ocio_display;
+        std::string ocio_view;
+        std::string ocio_look;
 
         // Background
         glm::vec3 background_color = glm::vec3(0.0f, 0.0f, 0.0f);
