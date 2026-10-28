@@ -10124,6 +10124,10 @@ namespace lfs::training {
         if (!result) {
             return result;
         }
+        // HDR fork (M4): the checkpoint stream does not carry SplatData::HdrState and the restore may have
+        // replaced the model object initialize() tagged; tag the restored model from the (saved) parameters.
+        if (params_.optimization.hdr)
+            strategy_->get_model().set_hdr({true, params_.optimization.hdr_scale, params_.optimization.hdr_color_max});
         if (ppisp_) {
             if (params_.optimization.use_exposure_correction) {
                 ppisp_->set_train_crf(false);
