@@ -1409,13 +1409,15 @@ set_tests_properties(lichtfeld.fast PROPERTIES
     TIMEOUT 60
 )
 
-# HDR fork (PLAN.md M2): the colour chain and the mu-law loss, addressable as `ctest -L fast -R hdr`.
+# HDR fork (PLAN.md M2-M6). Every HDR test carries the label `hdr`; the ones that need a CUDA device also carry
+# `gpu`, so a CPU-only machine runs `ctest -L hdr -LE gpu` and a GPU box `ctest -L hdr`. `tools/run_hdr_tests.sh`
+# is the one command that runs these together with the Python side (tools/, the plugin, the LDR bit-exact check).
 add_test(NAME lichtfeld.hdr_color_chain
     COMMAND $<TARGET_FILE:lichtfeld_tests> "--gtest_filter=HdrColorChainTest.*" --gtest_color=no
 )
 set_tests_properties(lichtfeld.hdr_color_chain PROPERTIES
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    LABELS "fast;gpu"
+    LABELS "fast;gpu;hdr"
     TIMEOUT 60
 )
 
@@ -1425,7 +1427,7 @@ add_test(NAME lichtfeld.hdr_display_chain
 )
 set_tests_properties(lichtfeld.hdr_display_chain PROPERTIES
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    LABELS "fast"
+    LABELS "fast;cpu;hdr"
     TIMEOUT 60
 )
 
@@ -1435,7 +1437,7 @@ add_test(NAME lichtfeld.hdr_bracket_stage
 )
 set_tests_properties(lichtfeld.hdr_bracket_stage PROPERTIES
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    LABELS "fast;gpu"
+    LABELS "fast;gpu;hdr"
     TIMEOUT 120
 )
 
@@ -1445,8 +1447,19 @@ add_test(NAME lichtfeld.hdr_eval_split
 )
 set_tests_properties(lichtfeld.hdr_eval_split PROPERTIES
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    LABELS "fast"
+    LABELS "fast;cpu;hdr"
     TIMEOUT 60
+)
+
+# HDR fork (PLAN.md M3, M5): the training parameters incl. the hdr_* properties — registry coverage, JSON round
+# trip, validation, and the golden JSONs in tests/data/param_json_golden (CPU only).
+add_test(NAME lichtfeld.hdr_parameters
+    COMMAND $<TARGET_FILE:lichtfeld_tests> "--gtest_filter=TrainingParametersTest.*:ExplicitTrainingOverridesTest.*" --gtest_color=no
+)
+set_tests_properties(lichtfeld.hdr_parameters PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    LABELS "fast;cpu;hdr"
+    TIMEOUT 120
 )
 
 add_test(NAME lichtfeld.slow
