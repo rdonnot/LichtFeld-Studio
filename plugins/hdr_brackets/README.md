@@ -154,6 +154,21 @@ Otherwise load it once per session from the Python console: `lf.plugins.load("hd
 cd plugins/hdr_brackets && uv run python -m hdr_brackets.cli <src> <out> [--no-sfm] [--reuse-sfm] [--no-brackets]
 ```
 
+## Linear input: developed raws (`hdr_brackets.linear`)
+
+For brackets shot RAW and developed to scene-linear EXR (no camera response to recover), grouped by N'Brain's
+camera tether record instead of EXIF:
+
+```bash
+cd plugins/hdr_brackets && uv run python -m hdr_brackets.linear <capture_dir> <out> [--exr-dir D] [--max-side 3200] [--no-sfm]
+```
+
+`<capture_dir>/tether_set.json` names each position's frames, exposure times and ND stops; the developed EXRs are
+`<capture_dir>/exr/<frame>.exr`. Per pixel `E = Σ w·x/t / Σ w`, `w = t · hat(x / white)`, ND frames by
+`t · 2^-nd_stops`. The merged EXRs keep the input's colourspace tag (ACEScg by default) — the trainer converts on
+load. Same `<out>` layout as above, `exposures.json` with `"linear": true, "crf": null`. Prints one JSON line per
+step and the report last. Tests: `tests/test_linear.py`. N'Brain's side: `docs/hdr-scan.md` in ShowControl.
+
 ## Limits
 
 - Cancel only disables the button: the core has no cancellation yet, a started run finishes.
