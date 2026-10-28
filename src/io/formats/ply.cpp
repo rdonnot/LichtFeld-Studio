@@ -8,6 +8,7 @@
 #include "core/hdr_sh.hpp"
 #include "core/logger.hpp"
 #include "core/native_fs.hpp"
+#include "core/ocio.hpp"
 #include "core/path_utils.hpp"
 #include "core/pinned_memory_allocator.hpp"
 #include "core/provenance.hpp"
@@ -453,6 +454,9 @@ namespace lfs::io {
         int hdr_mode = HDR_NONE;
         float hdr_scale = 0.0f;
         float hdr_color_max = 0.0f;
+        // `comment lichtfeld_colorspace <name>` (docs/hdr.md "Colour management"): the colorspace of the radiance;
+        // empty = the working space lin_srgb. Kept verbatim (OCIO names carry case and spaces).
+        std::string colorspace;
 
         FastPropertyLayout() {
             std::fill(std::begin(dc_offsets), std::end(dc_offsets), SIZE_MAX);
@@ -617,6 +621,10 @@ namespace lfs::io {
             return word;
         };
         const std::string_view key = take_word();
+        if (key == "lichtfeld_colorspace") {
+            layout.colorspace = std::string(trim_ascii_whitespace(line));
+            return;
+        }
         std::string value_lower(take_word());
         for (auto& c : value_lower)
             c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -2334,6 +2342,48 @@ namespace lfs::io {
                     state.color_max = state.scale > 0.0f ? 1000.0f * state.scale : 1e4f;
                     LOG_WARN("PLY: HDR file has no hdr_color_max; using {} ({})", state.color_max,
                              state.scale > 0.0f ? "1000 * hdr_scale" : "1e4, no hdr_scale either");
+                }
+                // A declared colorspace other than the working space (docs/hdr.md "Colour management"): a LINEAR
+                // file is converted through OCIO's 3x3 (SH is linear in colour: f_dc through the 0.5 offset, every
+                // f_rest directly) before the log projection; a log file cannot be (a matrix does not commute with
+                // the log) and any non-linear or unknown colorspace is refused rather than misread.
+                const bool foreign_space = !layout.colorspace.empty() && layout.colorspace != core::ocio::kWorkingSpaceTag;
+                if (foreign_space) {
+                    if (layout.hdr_mode != FastPropertyLayout::HDR_LINEAR) {
+                        throw_ply_error(lfs::ErrorCode::InvalidArgument,
+                                        std::format("PLY declares lichtfeld_colorspace '{}' on a lichtfeld_hdr log file; only "
+                                                    "the working space {} can hold log SH. Re-export it as lichtfeld_hdr linear.",
+                                                    layout.colorspace, core::ocio::kWorkingSpaceTag));
+                    }
+                    std::string ocio_error;
+                    const auto matrix = core::ocio::linear_matrix(layout.colorspace, core::ocio::kWorkingSpaceTag,
+                                                                  core::ocio::current(), &ocio_error);
+                    if (!matrix) {
+                        throw_ply_error(lfs::ErrorCode::InvalidArgument,
+                                        std::format("PLY declares lichtfeld_colorspace '{}', which cannot be converted to "
+                                                    "LichtFeld's working space {} with the current OCIO config ({}). Point "
+                                                    "--ocio / $OCIO at a config that defines it as a linear colorspace, or "
+                                                    "convert the file.",
+                                                    layout.colorspace, core::ocio::kWorkingSpaceTag, ocio_error));
+                    }
+                    const glm::mat3& m = *matrix;
+                    // Row-vector convention: colour_row * T, T = M^T (glm is column-major, so glm's memory order is T's rows).
+                    const std::vector<float> t{m[0][0], m[0][1], m[0][2], m[1][0], m[1][1], m[1][2], m[2][0], m[2][1], m[2][2]};
+                    constexpr float kC0 = 0.28209479177387814f;
+                    const auto n = static_cast<size_t>(splat_data.size());
+                    auto sh0_lin = splat_data.sh0().to(Device::CUDA).to(DataType::Float32).contiguous();
+                    const auto T = Tensor::from_vector(t, TensorShape{3, 3}, sh0_lin.device());
+                    auto dc = (sh0_lin.reshape(TensorShape{n, 3}) * kC0 + 0.5f).mm(T);
+                    splat_data.sh0() = ((dc - 0.5f) / kC0).reshape(TensorShape{n, 1, 3}).contiguous();
+                    splat_data.sh0().set_name("SplatData.sh0");
+                    if (splat_data.max_sh_coeffs_rest() > 0) {
+                        auto rest = splat_data.shN_canonical().to(Device::CUDA).to(DataType::Float32).contiguous();
+                        const auto k = static_cast<size_t>(rest.size(1));
+                        rest = rest.reshape(TensorShape{n * k, 3}).mm(T).reshape(TensorShape{n, k, 3}).contiguous();
+                        splat_data.shN_set_from_canonical(rest);
+                    }
+                    LOG_INFO("PLY: lichtfeld_colorspace '{}' converted to {} through OCIO (config '{}')", layout.colorspace,
+                             core::ocio::kWorkingSpaceTag, core::ocio::config_name());
                 }
                 if (layout.hdr_mode == FastPropertyLayout::HDR_LINEAR) {
                     const auto log_sh = core::hdr::linear_sh_to_log(splat_data.sh0(), splat_data.shN_canonical());
@@ -4152,12 +4202,13 @@ namespace lfs::io {
             try {
                 switch (mode) {
                 case core::hdr::ExportMode::BakedLdr:
-                    converted.emplace(core::hdr::bake_hdr_to_ldr(splat_data, options.hdr.exposure_ev, options.hdr.tone));
+                    converted.emplace(core::hdr::bake_hdr_to_ldr(splat_data, options.hdr.exposure_ev, options.hdr.tone, options.hdr.ocio));
                     LOG_INFO("PLY: HDR model baked to LDR at {:+.2f} EV ({}), no HDR header: opens in any viewer",
                              options.hdr.exposure_ev, core::hdr::tone_operator_name(options.hdr.tone));
                     break;
                 case core::hdr::ExportMode::LogInternal:
                     options.comments.emplace_back("lichtfeld_hdr log");
+                    options.comments.emplace_back(std::format("lichtfeld_colorspace {}", core::ocio::kWorkingSpaceTag));
                     options.comments.push_back(comment_float("hdr_scale", state.scale));
                     options.comments.push_back(comment_float("hdr_color_max", state.color_max));
                     LOG_INFO("PLY: HDR model written as internal log SH (lichtfeld_hdr log; only LichtFeld reads it)");
@@ -4165,6 +4216,7 @@ namespace lfs::io {
                 default:
                     converted.emplace(core::hdr::to_linear_radiance(splat_data));
                     options.comments.emplace_back("lichtfeld_hdr linear");
+                    options.comments.emplace_back(std::format("lichtfeld_colorspace {}", core::ocio::kWorkingSpaceTag));
                     options.comments.push_back(comment_float("hdr_scale", state.scale));
                     options.comments.push_back(comment_float("hdr_color_max", state.color_max));
                     options.comments.push_back(comment_float("hdr_display_exposure", state.scale > 0.0f ? 1.0f / state.scale : 1.0f));

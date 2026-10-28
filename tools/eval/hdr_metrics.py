@@ -122,6 +122,12 @@ def write_exr(path: str, rgb_float32: np.ndarray) -> None:
     if rgb.ndim != 3 or rgb.shape[2] != 3:
         raise ValueError(f"write_exr wants HxWx3, got {rgb.shape}")
     header = {"compression": OpenEXR.ZIP_COMPRESSION, "type": OpenEXR.scanlineimage}
+    # The working-space declaration (docs/hdr.md "Colour management"): Rec.709 primaries, D65, `lin_srgb`.
+    try:
+        header["chromaticities"] = OpenEXR.Chromaticities((0.64, 0.33), (0.30, 0.60), (0.15, 0.06), (0.3127, 0.3290))
+    except Exception:
+        pass
+    header["lichtfeld_colorspace"] = "lin_srgb"
     OpenEXR.File(header, {"RGB": rgb}).write(str(path))
 
 

@@ -100,6 +100,9 @@ namespace lfs::vis {
         bool hdr_display = true;
         float hdr_exposure_ev = 0.0f;
         bool hdr_false_color = false;
+        std::string ocio_display;
+        std::string ocio_view;
+        std::string ocio_look;
         int environment_mode = 0;
         std::string environment_map_path{
             std::string(kDefaultEnvironmentMapPath)};

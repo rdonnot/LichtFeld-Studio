@@ -11,10 +11,15 @@
 
 #include "rendering/display_color.hpp"
 
+#include "core/hdr_export_options.hpp"
+#include "core/hdr_sh.hpp"
+#include "core/native_fs.hpp"
+#include "core/ocio.hpp"
 #include "core/tensor.hpp"
 
 #include <cmath>
 #include <gtest/gtest.h>
+#include <random>
 #include <vector>
 
 namespace {
@@ -152,6 +157,198 @@ namespace {
             EXPECT_GE(g, previous) << ev;
             previous = g;
         }
+    }
+
+    // ── OpenColorIO (docs/hdr.md "Colour management") ─────────────────────────────────────────────────────
+
+    // The configs the OCIO tests run on: the built-in ACES studio config always; Houdini 22's CG config when
+    // it is on this machine (a second, file-based config with the same colorspace names).
+    std::vector<std::pair<std::string, const char*>> ocio_configs() {
+        std::vector<std::pair<std::string, const char*>> out{{"", "built-in studio-config-latest"}};
+        const char* houdini = "/opt/hfs22.0/packages/ocio/cg-config-v3.0.0_aces-v2.0_ocio-v2.5.ocio";
+        if (lfs::core::native_fs::exists(houdini))
+            out.emplace_back(houdini, "Houdini 22 CG config");
+        return out;
+    }
+
+    // The sweep the viewer, the bake and the oracle are compared on: 20 000 normalised radiances, log-uniform
+    // over 22 stops (2^-12 .. 2^10) with a random chroma, i.e. every value the HDR chain can meet.
+    std::vector<float> radiance_sweep(const std::size_t n = 20000) {
+        std::mt19937 rng(1234);
+        std::uniform_real_distribution<float> ev(-12.0f, 10.0f), chroma(0.2f, 1.0f);
+        std::vector<float> rgb;
+        rgb.reserve(3 * n + 12);
+        for (std::size_t i = 0; i < n; ++i) {
+            const float y = std::exp2(ev(rng));
+            rgb.push_back(y * chroma(rng));
+            rgb.push_back(y * chroma(rng));
+            rgb.push_back(y * chroma(rng));
+        }
+        // The edges: black, white, the cap, a negative.
+        for (const float v : {0.0f, 1.0f, 1000.0f, -0.5f})
+            rgb.insert(rgb.end(), {v, v, v});
+        return rgb;
+    }
+
+    struct SweepStats {
+        double psnr = 0.0;
+        double max_abs = 0.0;
+    };
+    SweepStats compare(const std::vector<float>& a, const std::vector<float>& b) {
+        double se = 0.0, max_abs = 0.0;
+        for (std::size_t i = 0; i < a.size(); ++i) {
+            const double d = std::clamp<double>(a[i], 0.0, 1.0) - std::clamp<double>(b[i], 0.0, 1.0);
+            se += d * d;
+            max_abs = std::max(max_abs, std::abs(d));
+        }
+        const double mse = se / static_cast<double>(a.size());
+        return {mse > 0.0 ? 10.0 * std::log10(1.0 / mse) : 200.0, max_abs};
+    }
+
+    TEST(HdrDisplayChainTest, OcioToneOperatorIsNamedAndListed) {
+        using lfs::core::hdr::ToneOperator;
+        EXPECT_EQ(lfs::core::hdr::parse_tone_operator("ocio"), ToneOperator::Ocio);
+        EXPECT_EQ(lfs::core::hdr::tone_operator_name(ToneOperator::Ocio), "ocio");
+        EXPECT_NE(lfs::core::hdr::kToneOperatorNames.find("ocio"), std::string_view::npos);
+        std::string error;
+        ASSERT_TRUE(lfs::core::ocio::available({}, &error)) << error;
+        const auto displays = lfs::core::ocio::displays();
+        ASSERT_FALSE(displays.empty());
+        ASSERT_FALSE(lfs::core::ocio::views({}, displays.front()).empty());
+        // The working space resolves in the ACES configs (alias lin_srgb -> "Linear Rec.709 (sRGB)").
+        EXPECT_EQ(lfs::core::ocio::working_space(), "Linear Rec.709 (sRGB)");
+        // An unknown display is refused with the list of valid ones, not silently defaulted.
+        EXPECT_FALSE(lfs::core::ocio::validate({"", "No Such Display", "", ""}, &error));
+        EXPECT_NE(error.find("sRGB - Display"), std::string::npos) << error;
+    }
+
+    // The LUT the viewer samples (65^3 over a -14..+8 stop log2 shaper) against OCIO's own CPU processor: at
+    // least 45 dB on every (display, view) the fork exercises, on both configs. The C++ twin IS the shader text.
+    TEST(HdrDisplayChainTest, OcioLutMatchesTheCpuProcessorWithin45dB) {
+        const auto sweep = radiance_sweep();
+        for (const auto& [config, config_name] : ocio_configs()) {
+            const std::string display = "sRGB - Display";
+            int aces2_runs = 0;
+            for (const char* view : {"ACES 2.0 - SDR 100 nits (Rec.709)", "Un-tone-mapped", "Raw"}) {
+                const lfs::core::ocio::Selection sel{config, display, view, ""};
+                std::string error;
+                // Every view here exists in both configs: a name that does not validate is a test bug, not a skip.
+                ASSERT_TRUE(lfs::core::ocio::validate(sel, &error)) << config_name << " / " << view << ": " << error;
+                aces2_runs += std::string_view(view).starts_with("ACES 2.0") ? 1 : 0;
+                const auto lut = lfs::core::ocio::lut_for(sel, lfs::core::ocio::kDefaultLutSize, &error);
+                ASSERT_TRUE(lut) << config_name << ' ' << view << ": " << error;
+                EXPECT_EQ(lut->size, 65);
+                EXPECT_EQ(lut->rgb.size(), 3u * 65u * 65u * 65u);
+                std::vector<float> reference = sweep;
+                ASSERT_TRUE(lfs::core::ocio::apply_cpu(sel, reference.data(), reference.size() / 3, &error)) << error;
+                std::vector<float> got(sweep.size());
+                for (std::size_t i = 0; i < sweep.size(); i += 3) {
+                    const glm::vec3 c = lfs::core::ocio::sample(*lut, glm::vec3(sweep[i], sweep[i + 1], sweep[i + 2]));
+                    got[i] = c.r, got[i + 1] = c.g, got[i + 2] = c.b;
+                }
+                const auto stats = compare(got, reference);
+                EXPECT_GE(stats.psnr, 45.0) << config_name << " / " << view;
+                // A tone-mapped view is smooth in log space: <= 2/255 anywhere. "Raw" (linear, clipped at 1) and
+                // "Un-tone-mapped" (sRGB-encoded linear, clipped) have a hard knee at 1.0 that a 0.34-stop cell
+                // straddles: the worst cell there is 5-11/255 (measured), the PSNR still 50-57 dB.
+                const bool unbounded_view = std::string_view(view) == "Raw" || std::string_view(view) == "Un-tone-mapped";
+                EXPECT_LE(stats.max_abs, (unbounded_view ? 12.0 : 2.0) / 255.0 + 1e-6) << config_name << " / " << view;
+                // Node 0 is exactly f(0): black stays black.
+                const glm::vec3 black = lfs::core::ocio::sample(*lut, glm::vec3(0.0f));
+                std::vector<float> zero{0.0f, 0.0f, 0.0f};
+                ASSERT_TRUE(lfs::core::ocio::apply_cpu(sel, zero.data(), 1, &error));
+                EXPECT_NEAR(black.r, std::clamp(zero[0], 0.0f, 1.0f), 1e-6f) << view;
+                // A negative input is black, never NaN.
+                const glm::vec3 neg = lfs::core::ocio::sample(*lut, glm::vec3(-1.0f));
+                EXPECT_TRUE(std::isfinite(neg.r) && neg.r == black.r) << view;
+                std::printf("[ ocio ] %s / %s / %s: %.1f dB, max |e| %.2f/255\n", config_name, display.c_str(), view,
+                            stats.psnr, stats.max_abs * 255.0);
+            }
+            EXPECT_GE(aces2_runs, 1) << config_name << ": the ACES 2.0 view never ran";
+        }
+    }
+
+    // Exposure (EV) is applied in linear light BEFORE the view transform: LUT(x * 2^EV) equals the processor on
+    // x * 2^EV, at every EV, within the same bound.
+    TEST(HdrDisplayChainTest, OcioExposureIsAppliedBeforeTheView) {
+        const lfs::core::ocio::Selection sel{"", "sRGB - Display", "ACES 2.0 - SDR 100 nits (Rec.709)", ""};
+        std::string error;
+        ASSERT_TRUE(lfs::core::ocio::validate(sel, &error)) << error;
+        const auto lut = lfs::core::ocio::lut_for(sel, lfs::core::ocio::kDefaultLutSize, &error);
+        ASSERT_TRUE(lut) << error;
+        const auto sweep = radiance_sweep(4000);
+        for (const float ev : {-4.0f, 0.0f, 3.0f}) {
+            std::vector<float> exposed = sweep;
+            for (float& v : exposed)
+                v *= std::exp2(ev);
+            std::vector<float> reference = exposed;
+            ASSERT_TRUE(lfs::core::ocio::apply_cpu(sel, reference.data(), reference.size() / 3, &error)) << error;
+            std::vector<float> got(exposed.size());
+            for (std::size_t i = 0; i < exposed.size(); i += 3) {
+                const glm::vec3 c = lfs::core::ocio::sample(*lut, glm::vec3(exposed[i], exposed[i + 1], exposed[i + 2]));
+                got[i] = c.r, got[i + 1] = c.g, got[i + 2] = c.b;
+            }
+            const auto stats = compare(got, reference);
+            EXPECT_GE(stats.psnr, 45.0) << ev;
+        }
+        // And +1 EV on mid grey is brighter than 0 EV through the view (the LUT is monotonic in exposure).
+        EXPECT_GT(lfs::core::ocio::sample(*lut, glm::vec3(0.36f)).g, lfs::core::ocio::sample(*lut, glm::vec3(0.18f)).g);
+    }
+
+    // The CUDA bake (core::hdr::display_image with tone Ocio: the kernel samples the same LUT with the same text)
+    // equals the C++ twin pixel for pixel. One source of truth for the viewer, the bake and the tensor path.
+    TEST(HdrDisplayChainTest, OcioCudaDisplayImageEqualsTheCpuTwin) {
+        const lfs::core::ocio::Selection sel{"", "sRGB - Display", "ACES 2.0 - SDR 100 nits (Rec.709)", ""};
+        std::string error;
+        ASSERT_TRUE(lfs::core::ocio::validate(sel, &error)) << error;
+        const auto lut = lfs::core::ocio::lut_for(sel, lfs::core::ocio::kDefaultLutSize, &error);
+        ASSERT_TRUE(lut) << error;
+        constexpr std::size_t H = 64, W = 64;
+        const auto sweep = radiance_sweep(H * W - 4); // 3 * H * W floats, interleaved
+        // Absolute radiance = normalised * s; display_image divides by s and applies 2^EV.
+        const lfs::core::SplatData::HdrState state{true, 2421.4f, 2421400.0f};
+        const float ev = 1.5f;
+        std::vector<float> chw(3 * H * W);
+        for (std::size_t p = 0; p < H * W; ++p)
+            for (int c = 0; c < 3; ++c)
+                chw[c * H * W + p] = sweep[3 * p + c] * state.scale;
+        const auto linear = lfs::core::Tensor::from_vector(chw, {3, H, W}, lfs::core::Device::CUDA);
+        const auto shown = lfs::core::hdr::display_image(linear, state, ev, lfs::core::hdr::ToneOperator::Ocio, sel)
+                               .cpu()
+                               .contiguous();
+        const float* out = shown.ptr<float>();
+        ASSERT_NE(out, nullptr);
+        double max_abs = 0.0;
+        for (std::size_t p = 0; p < H * W; ++p) {
+            const glm::vec3 x = glm::vec3(sweep[3 * p], sweep[3 * p + 1], sweep[3 * p + 2]) * std::exp2(ev);
+            const glm::vec3 want = lfs::core::ocio::sample(*lut, glm::max(x, glm::vec3(0.0f)));
+            for (int c = 0; c < 3; ++c)
+                max_abs = std::max(max_abs, std::abs(static_cast<double>(out[c * H * W + p]) - want[c]));
+        }
+        EXPECT_LE(max_abs, 1e-5) << "CUDA LUT sampling drifted from the C++ twin";
+    }
+
+    // A foreign linear colorspace maps to the working space through a 3x3; a non-linear one is refused.
+    TEST(HdrDisplayChainTest, OcioLinearMatrixProbe) {
+        std::string error;
+        const auto m = lfs::core::ocio::linear_matrix("ACEScg", "lin_srgb", {}, &error);
+        ASSERT_TRUE(m) << error;
+        // AP1 -> Rec.709 (D60 -> D65 Bradford, the ACES convention): the well-known matrix to 1e-3.
+        const glm::vec3 r = (*m) * glm::vec3(1.0f, 0.0f, 0.0f);
+        EXPECT_NEAR(r.x, 1.7050f, 2e-3f);
+        EXPECT_NEAR(r.y, -0.1302f, 2e-3f);
+        EXPECT_NEAR(r.z, -0.0240f, 2e-3f);
+        // Row sums of the matrix are 1 (white maps to white).
+        const glm::vec3 w = (*m) * glm::vec3(1.0f);
+        EXPECT_NEAR(w.x, 1.0f, 2e-3f);
+        EXPECT_NEAR(w.y, 1.0f, 2e-3f);
+        EXPECT_NEAR(w.z, 1.0f, 2e-3f);
+        EXPECT_FALSE(lfs::core::ocio::linear_matrix("ACEScct", "lin_srgb", {}, &error)) << "ACEScct is a log encoding";
+        EXPECT_FALSE(lfs::core::ocio::linear_matrix("No Such Space", "lin_srgb", {}, &error));
+        const auto identity = lfs::core::ocio::linear_matrix("lin_srgb", "Linear Rec.709 (sRGB)", {}, &error);
+        ASSERT_TRUE(identity) << error;
+        EXPECT_NEAR((*identity)[0][0], 1.0f, 1e-6f);
+        EXPECT_NEAR((*identity)[1][0], 0.0f, 1e-6f);
     }
 
 } // namespace

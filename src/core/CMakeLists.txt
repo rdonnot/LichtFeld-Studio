@@ -87,6 +87,7 @@ set(CORE_SOURCES
         image_exr.cpp
         hdr_sh.cpp
         hdr_sh.cu
+        ocio.cpp
         mapped_file.cpp
         optimization_properties.cpp
         parameters.cpp
@@ -162,6 +163,7 @@ target_link_libraries(lfs_core
         TIFF::TIFF
         WebP::webp
         OpenEXR::OpenEXRCore
+        OpenColorIO::OpenColorIO
         OpenMeshCore
 )
 # OpenMP for tensor multi-threaded operations

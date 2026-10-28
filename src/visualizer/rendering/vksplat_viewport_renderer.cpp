@@ -1958,6 +1958,9 @@ namespace lfs::vis {
             std::uint32_t color_tonemapping = 0;
             std::uint32_t splat_render_profile = 0;
             std::uint32_t hdr_mode = 0; // HDR fork (M4): 0 LDR, 1 HDR display chain, 2 HDR false colour
+            std::int32_t ocio_lut_size = 0; // OCIO (tone 7): nodes per LUT axis, 0 = none
+            float ocio_log2_lo = 0.0f;
+            float ocio_log2_hi = 0.0f;
         };
 
         // HDR fork (PLAN.md M4). An HDR model (SplatData::HdrState: log-radiance SH, scale s, absolute cap)
@@ -1970,12 +1973,16 @@ namespace lfs::vis {
         void populateVksplatDisplayUniforms(VulkanGSRendererUniforms& uniforms,
                                             const lfs::rendering::ViewportRenderRequest& request,
                                             const lfs::core::SplatData& splat_data) {
-            uniforms.color_tonemapping = static_cast<std::uint32_t>(std::clamp(request.color_tonemapping, 0, 6));
             uniforms.splat_render_profile = request.splat_render_profile == 1 ? 1u : 0u;
             const auto& hdr = splat_data.hdr();
             const bool hdr_active = request.hdr_display && splat_data.is_hdr() &&
                                     std::isfinite(hdr.scale) && hdr.scale > 0.0f &&
                                     std::isfinite(hdr.color_max) && hdr.color_max > 0.0f;
+            // Tone 7 (OCIO) exists only for the HDR chain; LDR keeps 0..6 exactly as before, and a persisted 7
+            // (an HDR session's choice) shown on an LDR model is the LDR default, not Neutral.
+            uniforms.color_tonemapping = hdr_active ? static_cast<std::uint32_t>(std::clamp(request.color_tonemapping, 0, 7))
+                                         : request.color_tonemapping == 7 ? 0u
+                                                                           : static_cast<std::uint32_t>(std::clamp(request.color_tonemapping, 0, 6));
             if (!hdr_active) {
                 uniforms.color_exposure = std::isfinite(request.color_exposure) ? std::clamp(request.color_exposure, 0.1f, 8.0f) : 1.0f;
                 uniforms.hdr_flags = 0u;
@@ -1997,6 +2004,60 @@ namespace lfs::vis {
         }
 
     } // namespace
+
+    // OCIO display (docs/hdr.md "Colour management"): when an HDR model is shown with tone 7, bake (cached) the
+    // selected display/view/look into a LUT the compose pass samples, make it the process default (so an
+    // export from this session bakes what the viewer shows), and fall back to ACES when it cannot be built or
+    // the standard-portal profile (per-splat display in Slang, no LUT there) is active.
+    void VksplatViewportRenderer::prepareOcioDisplay(VulkanGSRendererUniforms& uniforms,
+                                                      const lfs::rendering::ViewportRenderRequest& request,
+                                                      const lfs::core::SplatData& splat_data) {
+        (void)splat_data;
+        if ((uniforms.hdr_flags & kHdrFlagLogSh) == 0u || uniforms.color_tonemapping != 7u) {
+            ocio_lut_ = nullptr;
+            return;
+        }
+        if (uniforms.splat_render_profile != 0u) {
+            static bool warned = false;
+            if (!warned) {
+                LOG_WARN("OCIO display is not available in the standard-portal profile (per-splat display); showing ACES");
+                warned = true;
+            }
+            uniforms.color_tonemapping = 4u;
+            ocio_lut_ = nullptr;
+            return;
+        }
+        const lfs::core::ocio::Selection selection{"", request.ocio_display, request.ocio_view, request.ocio_look};
+        std::string error;
+        auto lut = lfs::core::ocio::lut_for(selection, lfs::core::ocio::kDefaultLutSize, &error);
+        if (!lut) {
+            static std::string last_error;
+            if (last_error != error) {
+                LOG_WARN("OCIO display unavailable ({}); showing ACES", error);
+                last_error = error;
+            }
+            uniforms.color_tonemapping = 4u;
+            ocio_lut_ = nullptr;
+            return;
+        }
+        if (!ocio_lut_ || ocio_lut_->key != lut->key) {
+            lfs::core::ocio::set_current(lfs::core::ocio::resolve(selection));
+        }
+        ocio_lut_ = std::move(lut);
+    }
+
+    void VksplatViewportRenderer::releaseOcioBuffers() {
+        for (auto* typed_buffer : {&ocio_lut_buffer_, &ocio_dummy_buffer_}) {
+            auto& dev = typed_buffer->deviceBuffer;
+            if (dev.buffer != VK_NULL_HANDLE && dev.allocation != VK_NULL_HANDLE) {
+                renderer_.destroyBuffer(dev);
+            }
+            typed_buffer->clear();
+            typed_buffer->shrink_to_fit();
+            dev = {};
+        }
+        ocio_lut_uploaded_key_.clear();
+    }
 
     struct VksplatViewportRenderer::ComposePipeline {
         VkShaderModule shader_module = VK_NULL_HANDLE;
@@ -2449,6 +2510,7 @@ namespace lfs::vis {
                 });
             }
             drainOutputImagePool(true);
+            releaseOcioBuffers();
             if (compose_) {
                 compose_->destroy(context_->device());
             }
@@ -6063,7 +6125,7 @@ namespace lfs::vis {
                                    compose_->shader_module,
                                    "vksplat.compose.shader");
 
-        std::array<VkDescriptorSetLayoutBinding, 4> bindings{};
+        std::array<VkDescriptorSetLayoutBinding, 5> bindings{};
         bindings[0].binding = 0;
         bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         bindings[0].descriptorCount = 1;
@@ -6080,6 +6142,10 @@ namespace lfs::vis {
         bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         bindings[3].descriptorCount = 1;
         bindings[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[4].binding = 4; // OCIO display LUT (or the dummy)
+        bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[4].descriptorCount = 1;
+        bindings[4].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         VkDescriptorSetLayoutCreateInfo layout_info{};
         layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         layout_info.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
@@ -6277,8 +6343,11 @@ namespace lfs::vis {
             const auto clear_background = depth_view || clear_hdr_mode == 2u
                                               ? background
                                           : clear_hdr_mode == 1u && uniforms.splat_render_profile == 0u
-                                              // Same chain as the compose pass with no splat: background in linear light -> tone -> OETF.
-                                              ? lfs::rendering::lfsDisplayHdr(lfs::rendering::lfsSrgbEotf(glm::clamp(background, glm::vec3(0), glm::vec3(1))), uniforms.color_tonemapping, 1.0f)
+                                              // Same chain as the compose pass with no splat: background in linear light -> tone -> OETF
+                                              // (the OCIO LUT through its C++ twin when tone 7 has one).
+                                              ? (uniforms.color_tonemapping == 7u && ocio_lut_
+                                                     ? lfs::core::ocio::sample(*ocio_lut_, lfs::rendering::lfsSrgbEotf(glm::clamp(background, glm::vec3(0), glm::vec3(1))))
+                                                     : lfs::rendering::lfsDisplayHdr(lfs::rendering::lfsSrgbEotf(glm::clamp(background, glm::vec3(0), glm::vec3(1))), uniforms.color_tonemapping == 7u ? 4u : uniforms.color_tonemapping, 1.0f))
                                           : uniforms.splat_render_profile == 0u && clear_hdr_mode == 0u
                                               ? lfs::rendering::lfsDisplayTone(glm::max(background, glm::vec3(0)), uniforms.color_tonemapping, uniforms.color_exposure)
                                               : background;
@@ -6348,7 +6417,54 @@ namespace lfs::vis {
         VkDescriptorImageInfo depth_image_info{};
         depth_image_info.imageView = output.depth_image.view;
         depth_image_info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-        std::array<VkWriteDescriptorSet, 4> writes{};
+
+        // OCIO display LUT: upload once per LUT key (vkCmdUpdateBuffer in this command stream, then a
+        // transfer -> compute barrier); a 4-float dummy is bound whenever no LUT is active.
+        const bool use_ocio_lut = uniforms.color_tonemapping == 7u && composeHdrMode(uniforms) == 1u && ocio_lut_ &&
+                                  ocio_lut_->size >= 2 && !ocio_lut_->rgb.empty();
+        if (ocio_dummy_buffer_.deviceBuffer.buffer == VK_NULL_HANDLE) {
+            renderer_.resizeDeviceBuffer(ocio_dummy_buffer_, 4, true);
+            ocio_dummy_buffer_.deviceBuffer.label = "vksplat_ocio_dummy";
+            recordFillBuffer(cmd, ocio_dummy_buffer_.deviceBuffer, 0u);
+        }
+        bool lut_uploaded_now = false;
+        if (use_ocio_lut && ocio_lut_uploaded_key_ != ocio_lut_->key) {
+            const VkBuffer previous_lut_buffer = ocio_lut_buffer_.deviceBuffer.buffer;
+            renderer_.resizeDeviceBuffer(ocio_lut_buffer_, ocio_lut_->rgb.size(), true);
+            ocio_lut_buffer_.deviceBuffer.label = "vksplat_ocio_lut";
+            if (previous_lut_buffer != VK_NULL_HANDLE && ocio_lut_buffer_.deviceBuffer.buffer == previous_lut_buffer) {
+                // Same VkBuffer re-filled in place: the previous frame's compose may still be reading it, so its
+                // compute read must finish before vkCmdUpdateBuffer writes (a grown buffer is a new allocation).
+                VkBufferMemoryBarrier2 reuse_barrier{};
+                reuse_barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+                reuse_barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+                reuse_barrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+                reuse_barrier.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+                reuse_barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+                reuse_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                reuse_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                reuse_barrier.buffer = ocio_lut_buffer_.deviceBuffer.buffer;
+                reuse_barrier.offset = ocio_lut_buffer_.deviceBuffer.offset;
+                reuse_barrier.size = ocio_lut_buffer_.deviceBuffer.size;
+                VkDependencyInfo reuse_dep{};
+                reuse_dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+                reuse_dep.bufferMemoryBarrierCount = 1;
+                reuse_dep.pBufferMemoryBarriers = &reuse_barrier;
+                vkCmdPipelineBarrier2(cmd, &reuse_dep);
+            }
+            recordUpdateBufferChunks(cmd, ocio_lut_buffer_.deviceBuffer, ocio_lut_->rgb.data(),
+                                     ocio_lut_->rgb.size() * sizeof(float));
+            ocio_lut_uploaded_key_ = ocio_lut_->key;
+            lut_uploaded_now = true;
+            LOG_INFO("vksplat: OCIO display LUT uploaded ({}^3, {} KiB)", ocio_lut_->size,
+                     ocio_lut_->rgb.size() * sizeof(float) >> 10);
+        }
+        const _VulkanBuffer& lut_binding = use_ocio_lut ? ocio_lut_buffer_.deviceBuffer : ocio_dummy_buffer_.deviceBuffer;
+        VkDescriptorBufferInfo lut_info{};
+        lut_info.buffer = lut_binding.buffer;
+        lut_info.offset = lut_binding.offset;
+        lut_info.range = lut_binding.size;
+        std::array<VkWriteDescriptorSet, 5> writes{};
         writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[0].dstBinding = 0;
         writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -6369,8 +6485,13 @@ namespace lfs::vis {
         writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         writes[3].descriptorCount = 1;
         writes[3].pImageInfo = &depth_image_info;
+        writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[4].dstBinding = 4;
+        writes[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[4].descriptorCount = 1;
+        writes[4].pBufferInfo = &lut_info;
 
-        std::array<VkBufferMemoryBarrier2, 2> pixel_barriers{};
+        std::array<VkBufferMemoryBarrier2, 3> pixel_barriers{};
         pixel_barriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
         pixel_barriers[0].srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
         pixel_barriers[0].srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
@@ -6385,6 +6506,14 @@ namespace lfs::vis {
         pixel_barriers[1].buffer = buffers_.pixel_depth.deviceBuffer.buffer;
         pixel_barriers[1].offset = buffers_.pixel_depth.deviceBuffer.offset;
         pixel_barriers[1].size = buffers_.pixel_depth.deviceBuffer.size;
+        // The LUT / dummy written by vkCmdUpdateBuffer / vkCmdFillBuffer above -> compute read.
+        pixel_barriers[2] = pixel_barriers[0];
+        pixel_barriers[2].srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_CLEAR_BIT;
+        pixel_barriers[2].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        pixel_barriers[2].buffer = lut_binding.buffer;
+        pixel_barriers[2].offset = lut_binding.offset;
+        pixel_barriers[2].size = lut_binding.size;
+        (void)lut_uploaded_now;
         VkDependencyInfo pixel_dep{};
         pixel_dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
         pixel_dep.bufferMemoryBarrierCount = static_cast<std::uint32_t>(pixel_barriers.size());
@@ -6423,6 +6552,9 @@ namespace lfs::vis {
             .color_tonemapping = uniforms.color_tonemapping,
             .splat_render_profile = uniforms.splat_render_profile,
             .hdr_mode = composeHdrMode(uniforms),
+            .ocio_lut_size = use_ocio_lut ? ocio_lut_->size : 0,
+            .ocio_log2_lo = use_ocio_lut ? ocio_lut_->log2_lo : 0.0f,
+            .ocio_log2_hi = use_ocio_lut ? ocio_lut_->log2_hi : 0.0f,
         };
         vkCmdPushConstants(cmd,
                            compose_->pipeline_layout,
@@ -8507,6 +8639,7 @@ namespace lfs::vis {
                                               : orthographicEyeSetback(request.frame_view, splat_data, request.scene,
                                                                        false));
             populateVksplatDisplayUniforms(uniforms, request, splat_data);
+            prepareOcioDisplay(uniforms, request, splat_data);
             uniforms.step = static_cast<std::uint32_t>(modelTransformCount(request.scene.model_transforms));
             uniforms.sort_capacity = HIGS_DEPTH_WAVE_INSTANCES;
             if (request.depth_view || request.require_exact_depth)
@@ -9195,6 +9328,7 @@ namespace lfs::vis {
                                               : orthographicEyeSetback(request.frame_view, splat_data, request.scene,
                                                                        force_input_upload));
             populateVksplatDisplayUniforms(uniforms, request, splat_data);
+            prepareOcioDisplay(uniforms, request, splat_data);
             uniforms.step = static_cast<std::uint32_t>(modelTransformCount(request.scene.model_transforms));
             uniforms.lod_enabled = (lod_indices_present || gpu_lod_render_active) ? 1u : 0u;
             if (lod_logical_indices_present || gpu_lod_render_active) {

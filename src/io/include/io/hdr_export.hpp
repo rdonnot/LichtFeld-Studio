@@ -29,7 +29,7 @@ namespace lfs::io {
         if (hdr.mode != core::hdr::ExportMode::BakedLdr)
             return make_error(ErrorCode::UNSUPPORTED_FORMAT, core::hdr::refusal_message(format_name), output_path);
         try {
-            baked_storage.emplace(core::hdr::bake_hdr_to_ldr(splat, hdr.exposure_ev, hdr.tone));
+            baked_storage.emplace(core::hdr::bake_hdr_to_ldr(splat, hdr.exposure_ev, hdr.tone, hdr.ocio));
         } catch (const std::exception& e) {
             return make_error(ErrorCode::ENCODING_FAILED, std::string("HDR bake failed: ") + e.what(), output_path);
         }

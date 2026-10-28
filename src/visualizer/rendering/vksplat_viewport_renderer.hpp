@@ -8,6 +8,7 @@
 
 #include "core/error.hpp"
 #include "core/exportable_storage.hpp"
+#include "core/ocio.hpp"
 #include "core/splat_data.hpp"
 #include "lod_page_cache.hpp"
 #include "lod_pool_quant.hpp"
@@ -677,6 +678,16 @@ namespace lfs::vis {
         };
         LodPageInputStorage lod_page_inputs_;
         std::unique_ptr<ComposePipeline> compose_;
+        // OCIO display (docs/hdr.md): the baked LUT the compose pass samples when the tone is 7, its device
+        // buffer (uploaded once per LUT key) and the 4-float dummy bound when no LUT is active.
+        std::shared_ptr<const lfs::core::ocio::Lut3D> ocio_lut_;
+        Buffer<float> ocio_lut_buffer_;
+        std::string ocio_lut_uploaded_key_;
+        Buffer<float> ocio_dummy_buffer_;
+        void prepareOcioDisplay(VulkanGSRendererUniforms& uniforms,
+                                const lfs::rendering::ViewportRenderRequest& request,
+                                const lfs::core::SplatData& splat_data);
+        void releaseOcioBuffers();
         static constexpr std::size_t kOutputSlotCount = OutputSlotRing::kOutputSlotCount;
         static constexpr std::size_t kFrameRingSize = OutputSlotRing::kFrameRingSize;
         OutputSlotRing ring_{};

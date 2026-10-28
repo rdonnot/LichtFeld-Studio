@@ -1415,7 +1415,8 @@ namespace lfs::app {
                 }
                 if (model->is_hdr()) {
                     image = core::hdr::display_image(image, model->hdr(), cfg.exposure_ev,
-                                                     static_cast<core::hdr::ToneOperator>(cfg.tone));
+                                                     static_cast<core::hdr::ToneOperator>(cfg.tone),
+                                                     core::ocio::Selection{"", cfg.ocio_display, cfg.ocio_view, cfg.ocio_look});
                 }
                 auto image_hwc = image.permute({1, 2, 0}).contiguous();
 

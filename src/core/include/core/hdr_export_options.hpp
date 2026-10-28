@@ -19,6 +19,7 @@
 //                   of the project checkpoint; only LichtFeld reads it.
 
 #include "core/export.hpp"
+#include "core/ocio.hpp"
 #include <optional>
 #include <string>
 #include <string_view>
@@ -34,6 +35,7 @@ namespace lfs::core::hdr {
         Aces = 4,
         Aces2 = 5,
         Neutral = 6,
+        Ocio = 7, // an OpenColorIO display/view (ExportOptions::ocio, else the process-wide core::ocio::current())
     };
 
     enum class ExportMode : int {
@@ -47,6 +49,7 @@ namespace lfs::core::hdr {
         ExportMode mode = ExportMode::Auto;
         float exposure_ev = 0.0f;            // BakedLdr: EV relative to the scene's natural exposure 1/s
         ToneOperator tone = ToneOperator::Aces; // BakedLdr: tone operator
+        ocio::Selection ocio{};                  // tone == Ocio: config / display / view / look (empty = current())
     };
 
     LFS_CORE_API std::optional<ToneOperator> parse_tone_operator(std::string_view name);
@@ -54,7 +57,7 @@ namespace lfs::core::hdr {
     LFS_CORE_API std::optional<ExportMode> parse_export_mode(std::string_view name);
     LFS_CORE_API std::string_view export_mode_name(ExportMode mode);
 
-    inline constexpr std::string_view kToneOperatorNames = "none, linear, filmic, hejl, aces, aces2, neutral";
+    inline constexpr std::string_view kToneOperatorNames = "none, linear, filmic, hejl, aces, aces2, neutral, ocio";
     inline constexpr std::string_view kExportModeNames = "auto, linear, baked, log";
 
     // One message for every writer that cannot hold log radiance.

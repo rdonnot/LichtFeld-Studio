@@ -234,6 +234,7 @@
             <option value="aces">ACES</option>
             <option value="aces2">ACES 2</option>
             <option value="neutral">@tr:rendering.tonemapping.neutral</option>
+            <option value="ocio" data-if="hdr_model">OCIO</option>
           </select>
         </div>
       </div>
@@ -265,6 +266,33 @@
           <label class="setting-row__control-col setting-row__control-col--checkbox">
             <input type="checkbox" data-checked="hdr_display" />
           </label>
+        </div>
+        <div data-if="color_tonemapping == 'ocio'">
+          <div class="setting-row setting-row--aligned" data-tooltip="tooltip.ocio_display">
+            <span class="setting-row__label-col" data-reset-prop="ocio_display">{{label_ocio_display}}</span>
+            <div class="setting-row__control-col setting-row__control-col--fill">
+              <select data-value="ocio_display" data-attrif-disabled="!hdr_display">
+                <option data-for="option : ocio_displays" data-attr-value="option.value">{{option.label}}</option>
+              </select>
+            </div>
+          </div>
+          <div class="setting-row setting-row--aligned" data-tooltip="tooltip.ocio_view">
+            <span class="setting-row__label-col" data-reset-prop="ocio_view">{{label_ocio_view}}</span>
+            <div class="setting-row__control-col setting-row__control-col--fill">
+              <select data-value="ocio_view" data-attrif-disabled="!hdr_display">
+                <option data-for="option : ocio_views" data-attr-value="option.value">{{option.label}}</option>
+              </select>
+            </div>
+          </div>
+          <div class="setting-row setting-row--aligned" data-tooltip="tooltip.ocio_look">
+            <span class="setting-row__label-col" data-reset-prop="ocio_look">{{label_ocio_look}}</span>
+            <div class="setting-row__control-col setting-row__control-col--fill">
+              <select data-value="ocio_look" data-attrif-disabled="!hdr_display">
+                <option data-for="option : ocio_looks" data-attr-value="option.value">{{option.label}}</option>
+              </select>
+            </div>
+          </div>
+          <span class="text-muted">{{ocio_config_name}}</span>
         </div>
       </div>
       <div class="setting-row setting-row--aligned" data-tooltip="tooltip.appearance_correction">

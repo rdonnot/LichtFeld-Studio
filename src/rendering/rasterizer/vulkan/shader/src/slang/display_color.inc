@@ -125,3 +125,48 @@ LFS_COLOR_INLINE LFS_COLOR_VEC3 lfsHdrFalseColor(float luminance, float ln_cap_n
                      : i == 5u ? c6 : i == 6u ? c7 : i == 7u ? c8 : i == 8u ? c9 : c10;
     return LFS_COLOR_MIX(a, b, w);
 }
+
+// ---------------------------------------------------------------------------------------------------
+// OpenColorIO display (docs/hdr.md "Colour management"). The (display, view, look) of an OCIO config
+// is baked on the CPU into a size^3 float LUT over a per-channel log2 shaper: node i of an axis holds the
+// output for normalised radiance 2^(lo + i/(size-1) * (hi-lo)), node 0 for exactly 0. Input is EXPOSED
+// scene-linear light (radiance / s * 2^EV, the exposure applied before the view transform, as OCIO
+// expects); output is the display encoding in [0, 1]. The same text samples the LUT in the compose
+// shader (GLSL, an SSBO of floats), the CUDA bake (a device pointer) and the C++ twin, so the three
+// cannot drift; core/ocio.cpp bakes it and tests/test_hdr_display_chain.cpp pins it against OCIO's own
+// CPU processor. The block is compiled only where a LUT can be bound (LFS_OCIO_LUT_FETCH defined): the
+// Slang projection shaders never define it and compile exactly as before.
+//   LFS_OCIO_LUT_PARAMS  the leading parameter(s) that carry the LUT storage (empty in GLSL)
+//   LFS_OCIO_LUT_FETCH(i) the vec3 at node index i = (ir*size + ig)*size + ib of a FLAT float array
+//                        (3 floats per node; never a vec3[] — std430 would pad it to 16 bytes)
+// ---------------------------------------------------------------------------------------------------
+#ifdef LFS_OCIO_LUT_FETCH
+LFS_COLOR_INLINE LFS_COLOR_VEC3 lfsOcioLut(LFS_OCIO_LUT_PARAMS LFS_COLOR_VEC3 x, int size, float lo, float hi) {
+    const float span = max(hi - lo, 1.0e-6f);
+    LFS_COLOR_VEC3 t = (log2(max(x, LFS_COLOR_VEC3(exp2(lo)))) - LFS_COLOR_VEC3(lo)) / span;
+    t = clamp(t, LFS_COLOR_VEC3(0.0f), LFS_COLOR_VEC3(1.0f)) * float(size - 1);
+    int ir = min(int(t.x), size - 2);
+    int ig = min(int(t.y), size - 2);
+    int ib = min(int(t.z), size - 2);
+    float fr = t.x - float(ir);
+    float fg = t.y - float(ig);
+    float fb = t.z - float(ib);
+    int base = (ir * size + ig) * size + ib;
+    int sr = size * size;
+    LFS_COLOR_VEC3 c000 = LFS_OCIO_LUT_FETCH(base);
+    LFS_COLOR_VEC3 c001 = LFS_OCIO_LUT_FETCH(base + 1);
+    LFS_COLOR_VEC3 c010 = LFS_OCIO_LUT_FETCH(base + size);
+    LFS_COLOR_VEC3 c011 = LFS_OCIO_LUT_FETCH(base + size + 1);
+    LFS_COLOR_VEC3 c100 = LFS_OCIO_LUT_FETCH(base + sr);
+    LFS_COLOR_VEC3 c101 = LFS_OCIO_LUT_FETCH(base + sr + 1);
+    LFS_COLOR_VEC3 c110 = LFS_OCIO_LUT_FETCH(base + sr + size);
+    LFS_COLOR_VEC3 c111 = LFS_OCIO_LUT_FETCH(base + sr + size + 1);
+    LFS_COLOR_VEC3 c00 = LFS_COLOR_MIX(c000, c001, fb);
+    LFS_COLOR_VEC3 c01 = LFS_COLOR_MIX(c010, c011, fb);
+    LFS_COLOR_VEC3 c10 = LFS_COLOR_MIX(c100, c101, fb);
+    LFS_COLOR_VEC3 c11 = LFS_COLOR_MIX(c110, c111, fb);
+    LFS_COLOR_VEC3 c0 = LFS_COLOR_MIX(c00, c01, fg);
+    LFS_COLOR_VEC3 c1 = LFS_COLOR_MIX(c10, c11, fg);
+    return clamp(LFS_COLOR_MIX(c0, c1, fr), LFS_COLOR_VEC3(0.0f), LFS_COLOR_VEC3(1.0f));
+}
+#endif

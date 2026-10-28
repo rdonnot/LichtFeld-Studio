@@ -66,6 +66,7 @@
     "tbb",
     "tiff",
     "openexr",
+    "opencolorio",
     "vulkan",
     {
       "name": "vulkan-loader",

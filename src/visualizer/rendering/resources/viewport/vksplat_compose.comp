@@ -4,6 +4,13 @@
 #define LFS_COLOR_VEC3 vec3
 #define LFS_COLOR_UINT uint
 #define LFS_COLOR_MIX mix
+// OCIO display LUT (docs/hdr.md): a flat float SSBO, 3 floats per node, bound at binding 4 (a 4-float dummy
+// when no LUT is active; ocio_lut_size is 0 then and the sampler is never reached).
+#define LFS_OCIO_LUT_PARAMS
+#define LFS_OCIO_LUT_FETCH(i) vec3(ocio_lut[3 * (i)], ocio_lut[3 * (i) + 1], ocio_lut[3 * (i) + 2])
+layout(set = 0, binding = 4) readonly buffer OcioLutBuffer {
+    float ocio_lut[];
+};
 #include "../../../../rendering/rasterizer/vulkan/shader/src/slang/display_color.inc"
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
@@ -24,6 +31,10 @@ layout(push_constant) uniform PushConstants {
     uint splat_render_profile;
     // HDR fork (M4): 0 = LDR (unchanged), 1 = HDR display chain, 2 = HDR false-colour view.
     uint hdr_mode;
+    // OCIO (tone 7): nodes per LUT axis (0 = no LUT, fall back to ACES) and the log2 shaper range.
+    int ocio_lut_size;
+    float ocio_log2_lo;
+    float ocio_log2_hi;
 } pc;
 
 layout(set = 0, binding = 0) readonly buffer PixelStateBuffer {
@@ -36,6 +47,16 @@ layout(set = 0, binding = 1) readonly buffer PixelDepthBuffer {
 
 layout(set = 0, binding = 2, rgba8) uniform writeonly image2D out_image;
 layout(set = 0, binding = 3, r32f) uniform writeonly image2D out_depth;
+
+// HDR display of EXPOSED linear radiance: the OCIO LUT when tone 7 has one, else the built-in chain.
+vec3 hdrDisplay(vec3 exposed_radiance) {
+    if (pc.color_tonemapping == 7u) {
+        if (pc.ocio_lut_size >= 2)
+            return lfsOcioLut(max(exposed_radiance, vec3(0.0)), pc.ocio_lut_size, pc.ocio_log2_lo, pc.ocio_log2_hi);
+        return lfsDisplayHdr(exposed_radiance, 4u, 1.0);
+    }
+    return lfsDisplayHdr(exposed_radiance, pc.color_tonemapping, 1.0);
+}
 
 const float ZERO_COVERAGE_ALPHA = 0.5 / 255.0;
 
@@ -140,7 +161,7 @@ void main() {
         vec3 straight_rgb = alpha > 1e-6 ? state.rgb / alpha : vec3(0.0);
         if (pc.hdr_mode == 1u) {
             if (pc.splat_render_profile == 0u) {
-                straight_rgb = lfsDisplayHdr(straight_rgb, pc.color_tonemapping, pc.color_exposure);
+                straight_rgb = hdrDisplay(max(straight_rgb, vec3(0.0)) * pc.color_exposure);
             }
         } else if (pc.splat_render_profile == 0u) {
             straight_rgb = lfsDisplayTone(max(straight_rgb,vec3(0.0)),pc.color_tonemapping,pc.color_exposure);
@@ -156,7 +177,7 @@ void main() {
         vec3 rgb;
         if (pc.splat_render_profile == 0u) {
             const vec3 radiance = max(state.rgb, vec3(0.0)) * pc.color_exposure + transmittance * background_linear;
-            rgb = lfsDisplayHdr(radiance, pc.color_tonemapping, 1.0);
+            rgb = hdrDisplay(radiance);
         } else {
             // Standard-portal profile: the splats were displayed per splat before blending.
             rgb = max(state.rgb, vec3(0.0)) + transmittance * pc.background.rgb;

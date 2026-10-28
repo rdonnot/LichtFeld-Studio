@@ -17,8 +17,12 @@
 #define LFS_COLOR_VEC3 glm::vec3
 #define LFS_COLOR_UINT std::uint32_t // one token: the .inc uses it as a functional cast
 #define LFS_COLOR_MIX glm::mix
+#define LFS_OCIO_LUT_PARAMS const float* __restrict__ lut,
+#define LFS_OCIO_LUT_FETCH(i) glm::vec3(lut[3 * (i)], lut[3 * (i) + 1], lut[3 * (i) + 2])
 using glm::clamp; // the .inc calls clamp() unqualified; CUDA has no scalar clamp of its own
 #include "display_color.inc"
+#undef LFS_OCIO_LUT_PARAMS
+#undef LFS_OCIO_LUT_FETCH
 #undef LFS_COLOR_INLINE
 #undef LFS_COLOR_VEC3
 #undef LFS_COLOR_UINT
@@ -36,7 +40,8 @@ namespace lfs::core::hdr::cuda {
         __global__ void per_direction_kernel(float* __restrict__ values, const std::size_t n_splats,
                                              const std::size_t directions, const int mode, const float color_max,
                                              const float log_color_max, const float exposure, const unsigned int tone,
-                                             const float* __restrict__ dc, const std::size_t dc_stride) {
+                                             const float* __restrict__ dc, const std::size_t dc_stride,
+                                             const OcioLutRef ocio_lut) {
             const std::size_t idx = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
             const std::size_t total = n_splats * directions;
             if (idx >= total)
@@ -67,7 +72,13 @@ namespace lfs::core::hdr::cuda {
             if (mode == 2 || mode == 3) {
                 // display_color.inc: the viewer's own HDR chain (exposure -> tone, "none" = "linear" ->
                 // sRGB OETF), one definition for the viewer (M4) and this bake (M5).
-                c = lfsDisplayHdr(c, tone, exposure);
+                if (tone == 7u && ocio_lut.data != nullptr) {
+                    // OCIO: the exposure is applied in linear BEFORE the view transform; the LUT holds the view.
+                    c = lfsOcioLut(ocio_lut.data, max(c, glm::vec3(0.0f)) * exposure, ocio_lut.size, ocio_lut.log2_lo,
+                                   ocio_lut.log2_hi);
+                } else {
+                    c = lfsDisplayHdr(c, tone == 7u ? 4u : tone, exposure);
+                }
             }
             *r = c.x;
             *g = c.y;
@@ -78,7 +89,7 @@ namespace lfs::core::hdr::cuda {
 
     void apply_per_direction(float* values, const std::size_t n_splats, const std::size_t directions, const int mode,
                              const float color_max, const float exposure, const int tone, cudaStream_t stream,
-                             const float* dc, const std::size_t dc_stride) {
+                             const float* dc, const std::size_t dc_stride, const OcioLutRef ocio_lut) {
         const std::size_t total = n_splats * directions;
         if (total == 0)
             return;
@@ -87,7 +98,8 @@ namespace lfs::core::hdr::cuda {
         const unsigned int blocks = static_cast<unsigned int>((total + kBlock - 1) / kBlock);
         per_direction_kernel<<<blocks, kBlock, 0, stream>>>(values, n_splats, directions, mode, color_max,
                                                             log_color_max, exposure,
-                                                            static_cast<unsigned int>(tone < 0 ? 0 : tone), dc, dc_stride);
+                                                            static_cast<unsigned int>(tone < 0 ? 0 : tone), dc, dc_stride,
+                                                            ocio_lut);
         LFS_CUDA_CHECK(cudaGetLastError());
     }
 
