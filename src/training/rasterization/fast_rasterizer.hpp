@@ -67,6 +67,7 @@ namespace lfs::training {
         float near_plane = 0.0f;
         float far_plane = 0.0f;
         bool mip_filter = false;
+        fast_lfs::rasterization::ColorActivation color_activation; // the backward must match the forward
 
         // Tile information (for tile-based training)
         int tile_x_offset = 0; // Horizontal offset of this tile
@@ -124,6 +125,7 @@ namespace lfs::training {
             near_plane = std::exchange(other.near_plane, 0.0f);
             far_plane = std::exchange(other.far_plane, 0.0f);
             mip_filter = std::exchange(other.mip_filter, false);
+            color_activation = std::exchange(other.color_activation, {});
             tile_x_offset = std::exchange(other.tile_x_offset, 0);
             tile_y_offset = std::exchange(other.tile_y_offset, 0);
             tile_width = std::exchange(other.tile_width, 0);
@@ -183,7 +185,18 @@ namespace lfs::training {
         bool render_normal = false,
         bool render_depth = true,
         float dilation_scale = 1.0f,
-        bool update_screen_share = true);
+        bool update_screen_share = true,
+        fast_lfs::rasterization::ColorActivation color_activation = {});
+
+    // HDR (PLAN.md M2): log-radiance SH with the configured cap; LDR keeps the stock [0, 4] clamp.
+    inline fast_lfs::rasterization::ColorActivation color_activation_for(const bool hdr, const float hdr_color_max) {
+        fast_lfs::rasterization::ColorActivation activation;
+        if (hdr) {
+            activation.color_max = hdr_color_max;
+            activation.log_radiance = true;
+        }
+        return activation;
+    }
 
     // Backward pass with optional extra alpha gradient for masked training
     void fast_rasterize_backward(
@@ -214,10 +227,12 @@ namespace lfs::training {
         bool mip_filter = false,
         const lfs::core::Tensor& bg_image = {},
         bool render_normal = false,
-        float dilation_scale = 1.0f) {
+        float dilation_scale = 1.0f,
+        fast_lfs::rasterization::ColorActivation color_activation = {}) {
         auto result = fast_rasterize_forward(
             viewpoint_camera, gaussian_model, bg_color, 0, 0, 0, 0, mip_filter,
-            bg_image, render_normal, /*render_depth=*/true, dilation_scale, /*update_screen_share=*/false);
+            bg_image, render_normal, /*render_depth=*/true, dilation_scale, /*update_screen_share=*/false,
+            color_activation);
         if (!result) {
             throw lfs::Exception(std::move(result.error()));
         }
@@ -245,7 +260,8 @@ namespace lfs::training {
         bool mip_filter = false,
         const lfs::core::Tensor& bg_image = {},
         bool render_normal = false,
-        float dilation_scale = 1.0f) {
+        float dilation_scale = 1.0f,
+        fast_lfs::rasterization::ColorActivation color_activation = {}) {
         return fast_rasterize(
             const_cast<lfs::core::Camera&>(viewpoint_camera),
             gaussian_model,
@@ -253,7 +269,8 @@ namespace lfs::training {
             mip_filter,
             bg_image,
             render_normal,
-            dilation_scale);
+            dilation_scale,
+            color_activation);
     }
 
     inline RenderOutput fast_rasterize(

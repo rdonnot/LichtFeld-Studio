@@ -5,6 +5,7 @@
 #pragma once
 
 #include "helper_math.h"
+#include "rasterization_config.h"
 #include <cstddef>
 #include <cstdint>
 #include <cuda_runtime.h>
@@ -93,6 +94,7 @@ namespace fast_lfs::rasterization {
         bool mip_filter,
         cudaStream_t stream,
         float* max_screen_share = nullptr,
-        float dilation_scale = 1.0f);
+        float dilation_scale = 1.0f,
+        ColorActivation color_activation = {});
 
 } // namespace fast_lfs::rasterization

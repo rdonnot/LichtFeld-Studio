@@ -551,7 +551,8 @@ namespace lfs::io {
             } else if (tensor.dtype() != lfs::core::DataType::Float32) {
                 tensor = tensor.to(lfs::core::DataType::Float32);
             }
-            tensor = tensor.clamp(0.0f, 1.0f).contiguous();
+            // Linear HDR radiance is unbounded above 1; only the LDR path clamps.
+            tensor = params.hdr_linear ? tensor.contiguous() : tensor.clamp(0.0f, 1.0f).contiguous();
 
             const auto scaled = lfs::core::prepare_undistort_params(
                 *params.undistort,
@@ -1489,6 +1490,9 @@ namespace lfs::io {
                                                    const std::string& cache_key,
                                                    void* cuda_stream,
                                                    const LoadParams& params) {
+        // JPEG and JPEG 2000 store [0,1]; a linear HDR image is decoded from its EXR every time.
+        if (params.hdr_linear)
+            return;
         const bool lossless = decodes_16bit(params);
         if (lossless && !jpeg2k_cache_available_.load(std::memory_order_relaxed))
             return;

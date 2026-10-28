@@ -263,6 +263,7 @@ namespace lfs::training {
         EvaluationViewInputs inputs;
         RenderOutput output;
         lfs::core::Tensor raw_image;
+        lfs::core::Tensor linear_render; // HDR only: the render before the mu-law, saved as EXR
         lfs::core::Tensor metric_mask;
         lfs::core::Tensor validity_mask; // [H,W] where the render warped to the source grid has a pixel
         EvaluationRenderGeometry render_geometry;
@@ -399,11 +400,19 @@ namespace lfs::training {
 
         void save_report() const;
 
+        // One line for metrics_report.txt naming the domain the metrics are computed in (HDR: mu-law).
+        void set_photometric_domain(std::string note, std::string bias_domain_suffix = {}) {
+            photometric_domain_ = std::move(note);
+            bias_domain_suffix_ = std::move(bias_domain_suffix);
+        }
+
         [[nodiscard]] const std::filesystem::path& per_image_path() const { return per_image_path_; }
 
     private:
         const std::filesystem::path output_dir_;
         std::vector<EvalMetrics> all_metrics_;
+        std::string photometric_domain_;
+        std::string bias_domain_suffix_; // appended inside "Bias (raw…)" / "Bias (corrected…)" (HDR: ", mu-law")
         const std::filesystem::path csv_path_;
         const std::filesystem::path txt_path_;
         const std::filesystem::path per_image_path_;

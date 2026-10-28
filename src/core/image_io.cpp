@@ -5,6 +5,7 @@
 #include "core/native_fs.hpp"
 
 #include "image_codecs.hpp"
+#include "image_exr.hpp"
 
 #include "core/cuda/image_quantize.hpp"
 #include "core/logger.hpp"
@@ -917,6 +918,22 @@ namespace lfs::core {
                 }
             }
         }
+    }
+
+    bool save_image_exr(const std::filesystem::path& path, const Tensor& image_chw) {
+        if (!image_chw.is_valid() || image_chw.ndim() != 3 || image_chw.shape()[0] != 3) {
+            LOG_ERROR("save_image_exr: expected a [3, H, W] tensor for {}", lfs::core::path_to_utf8(path));
+            return false;
+        }
+        const auto cpu = image_chw.to(DataType::Float32).to(Device::CPU).contiguous();
+        const int height = static_cast<int>(cpu.shape()[1]);
+        const int width = static_cast<int>(cpu.shape()[2]);
+        std::string error;
+        if (!image_codecs::encode_exr(path, cpu.ptr<float>(), width, height, error)) {
+            LOG_ERROR("save_image_exr: failed to write {}: {}", lfs::core::path_to_utf8(path), error);
+            return false;
+        }
+        return true;
     }
 
     bool save_png(const std::filesystem::path& p, const void* data, const int w, const int h,

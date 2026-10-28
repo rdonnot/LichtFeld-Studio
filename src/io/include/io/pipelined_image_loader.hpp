@@ -71,6 +71,8 @@ namespace lfs::io {
     constexpr size_t DECODE_FRAME_RING_CAPACITY = 14;
 
     struct PipelinedLoaderConfig {
+        // HDR training: requests decode float files (EXR) as linear radiance; see LoadParams::hdr_linear.
+        bool hdr_linear = false;
         size_t jpeg_batch_size = config::DEFAULT_BATCH_SIZE;
         size_t prefetch_count = config::DEFAULT_PREFETCH_COUNT;
         size_t output_queue_size = config::DEFAULT_OUTPUT_QUEUE_SIZE;

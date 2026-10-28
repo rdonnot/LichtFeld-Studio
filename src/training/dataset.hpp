@@ -544,6 +544,10 @@ namespace lfs::training {
             request.params.resize_factor = dataset_->get_resize_factor();
             request.params.max_width = dataset_->get_max_width();
             request.params.output_uint8 = !config_.use_16bit_color;
+            if (config_.hdr_linear) {
+                request.params.decode_float = true;
+                request.params.hdr_linear = true;
+            }
             if (!cam->image_size_loaded() ||
                 (dataset_->get_max_width() > 0 &&
                  (cam->image_height() > dataset_->get_max_width() ||

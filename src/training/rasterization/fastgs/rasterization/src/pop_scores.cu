@@ -40,7 +40,8 @@ namespace fast_lfs::rasterization {
             const uint n_visible,
             const uint width,
             const uint height,
-            const uint grid_width) {
+            const uint grid_width,
+            const float color_max) {
             auto block = cg::this_thread_block();
             const uint tile_idx = block.group_index().x;
             const uint thread_rank = block.thread_rank();
@@ -136,7 +137,7 @@ namespace fast_lfs::rasterization {
                         s_mean2d[thread_rank] = geom.mean2d;
                         s_bbox[thread_rank] = geom.pixel_bbox;
                         s_conic_opacity[thread_rank] = primitive_conic_opacity[work_idx];
-                        s_color[thread_rank] = fminf(fmaxf(make_float3(primitive_color[work_idx]), 0.0f), config::max_blend_color);
+                        s_color[thread_rank] = fminf(fmaxf(make_float3(primitive_color[work_idx]), 0.0f), color_max);
                     }
                 }
                 block.sync();
@@ -203,7 +204,7 @@ namespace fast_lfs::rasterization {
 
     void accumulate_pop_scores(const ForwardContext& ctx, int width, int height,
                                const float* background, const float* background_image,
-                               double* scores, size_t n_primitives, cudaStream_t stream) {
+                               double* scores, size_t n_primitives, const float color_max, cudaStream_t stream) {
         stream = lfs::resolve_stream(stream);
         if (ctx.n_instances == 0)
             return;
@@ -217,7 +218,7 @@ namespace fast_lfs::rasterization {
             tile.instance_ranges, static_cast<const uint*>(ctx.sorted_primitive_indices), ctx.primitive_work_indices,
             primitive.mean2d, primitive.conic_opacity, primitive.color, tile.n_contributions, tile.final_transmittance,
             background, background_image, scores, static_cast<uint>(ctx.n_instances), static_cast<uint>(n_primitives),
-            static_cast<uint>(ctx.n_visible), static_cast<uint>(width), static_cast<uint>(height), grid_width);
+            static_cast<uint>(ctx.n_visible), static_cast<uint>(width), static_cast<uint>(height), grid_width, color_max);
         LFS_CUDA_LAUNCH_CHECK(stream, "fastgs.pop_scores");
     }
 } // namespace fast_lfs::rasterization

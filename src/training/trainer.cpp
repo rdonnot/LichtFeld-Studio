@@ -43,6 +43,7 @@
 #include "io/project_recovery.hpp"
 #include "io/scene_chapter_adapter.hpp"
 #include "kernels/densification_kernels.hpp"
+#include "kernels/hdr_mulaw.hpp"
 #include "kernels/image_kernels.hpp"
 #include "lfs/kernels/ssim.cuh"
 #include "lfs/training/joint_adam_codec.hpp"
@@ -2821,6 +2822,68 @@ namespace lfs::training {
         }
     }
 
+    // HDR: P99 of the luminance over at most 16 training EXRs, decoded on the host at full resolution.
+    std::expected<float, std::string> Trainer::measure_hdr_scale(
+        const std::vector<std::shared_ptr<lfs::core::Camera>>& cameras) {
+        constexpr size_t kMaxImages = 16;
+        if (cameras.empty())
+            return std::unexpected("HDR: no training image to measure the radiance scale from");
+        const size_t stride = std::max<size_t>(1, cameras.size() / kMaxImages);
+        std::vector<float> luminance;
+        size_t used = 0;
+        for (size_t i = 0; i < cameras.size() && used < kMaxImages; i += stride) {
+            const auto& path = cameras[i]->image_path();
+            auto [data, width, height, channels] = lfs::core::load_image_float(path);
+            if (!data || width <= 0 || height <= 0 || channels <= 0)
+                return std::unexpected(std::format("HDR: cannot decode '{}' as a float image",
+                                                   lfs::core::path_to_utf8(path)));
+            const size_t pixels = static_cast<size_t>(width) * static_cast<size_t>(height);
+            // Subsample large images: the percentile of a 1-in-k grid is the percentile within noise.
+            const size_t step = std::max<size_t>(1, pixels / 2'000'000);
+            luminance.reserve(luminance.size() + pixels / step + 1);
+            for (size_t p = 0; p < pixels; p += step) {
+                const float* px = data + p * static_cast<size_t>(channels);
+                const float y = channels >= 3 ? 0.2126f * px[0] + 0.7152f * px[1] + 0.0722f * px[2] : px[0];
+                if (std::isfinite(y) && y > 0.0f)
+                    luminance.push_back(y);
+            }
+            lfs::core::free_image_float(data);
+            ++used;
+        }
+        if (luminance.empty())
+            return std::unexpected("HDR: the training EXRs contain no positive finite luminance");
+        const size_t k = std::min(luminance.size() - 1, static_cast<size_t>(0.99 * static_cast<double>(luminance.size())));
+        std::nth_element(luminance.begin(), luminance.begin() + static_cast<std::ptrdiff_t>(k), luminance.end());
+        const float s = luminance[k];
+        if (!(s > 0.0f) || !std::isfinite(s))
+            return std::unexpected(std::format("HDR: degenerate radiance scale {}", s));
+        return s;
+    }
+
+    // HDR: sh0 proxies p in [0,1] -> log radiance, absolute. The proxy is display-referred, so p is read as
+    // the loss domain's mu-law value and inverted the way the MRNF blob seeds are (mrnf.cpp):
+    // x = expm1(p ln(1+mu)) / mu, radiance = x * s, sh0 = (ln max(radiance, 1e-3) - 0.5) / SH_C0. A plain
+    // ln(p * s) put a mid-grey proxy at ~s/2 (1200 on smoke_hdr) and the optimiser darkened it through
+    // opacity: depth AbsRel against the sparse points 0.13 -> 0.74. In place on sh0 ([N, 1, 3] float32).
+    void Trainer::init_log_radiance_sh0(lfs::core::SplatData& model, const float hdr_scale, const float hdr_mu) {
+        constexpr float kShC0 = 0.28209479177387814f;
+        auto& sh0 = model.sh0();
+        if (!sh0.is_valid() || sh0.numel() == 0)
+            return;
+        const float s = hdr_scale > 0.0f ? hdr_scale : 1.0f;
+        const float mu = hdr_mu > 0.0f ? hdr_mu : 5000.0f;
+        const float log1p_mu = std::log1p(mu);
+        auto values = sh0.to_vector();
+        for (float& v : values) {
+            const float p = std::clamp(0.5f + kShC0 * v, 0.0f, 1.0f);
+            const float radiance = std::expm1(p * log1p_mu) / mu * s;
+            v = (std::log(std::max(radiance, 1e-3f)) - 0.5f) / kShC0;
+        }
+        sh0 = lfs::core::Tensor::from_vector(values, sh0.shape(), sh0.device());
+        LOG_INFO("HDR: {} sh0 initialised as log radiance from their LDR proxy colours (mu-law inverse, x s = {})",
+                 values.size(), s);
+    }
+
     std::expected<void, std::string> Trainer::initialize(const lfs::core::param::TrainingParameters& params) {
         if (const auto validation_error = params.validate(); !validation_error.empty()) {
             return std::unexpected("Invalid training parameters: " + validation_error);
@@ -2981,6 +3044,31 @@ namespace lfs::training {
 
             train_dataset_size_ = train_dataset_->size();
 
+            // HDR: the mu-law loss runs on x = v / s. s is the P99 luminance of (at most 16 of) the training
+            // EXRs, measured once here and written back so the saved training config and a resume reuse it.
+            // The colour cap is ABSOLUTE radiance; 0 means 1000 * s, resolved here and written back too so
+            // the saved config, a resume and the PLY (M5) all carry the value the kernels used.
+            if (params_.optimization.hdr && params_.optimization.hdr_scale <= 0.0f) {
+                const auto scale = measure_hdr_scale(train_dataset_->get_cameras());
+                if (!scale)
+                    return std::unexpected(scale.error());
+                params_.optimization.hdr_scale = *scale;
+                LOG_INFO("HDR: radiance scale s = {} (P99 luminance of the training EXRs); mu = {}",
+                         *scale, params_.optimization.hdr_mu);
+            } else if (params_.optimization.hdr) {
+                LOG_INFO("HDR: radiance scale s = {} (from the configuration); mu = {}",
+                         params_.optimization.hdr_scale, params_.optimization.hdr_mu);
+            }
+            if (params_.optimization.hdr && params_.optimization.hdr_color_max <= 0.0f) {
+                params_.optimization.hdr_color_max = 1000.0f * params_.optimization.hdr_scale;
+                LOG_INFO("HDR: colour cap = {} (1000 * s, absolute radiance; saved with the run)",
+                         params_.optimization.hdr_color_max);
+            } else if (params_.optimization.hdr) {
+                LOG_INFO("HDR: colour cap = {} (absolute radiance, from the configuration; {:.1f} * s)",
+                         params_.optimization.hdr_color_max,
+                         params_.optimization.hdr_color_max / params_.optimization.hdr_scale);
+            }
+
             // If using Scene mode and no strategy yet, create one
             if (scene_ && !strategy_) {
                 auto* model = scene_->getTrainingModel();
@@ -3005,6 +3093,13 @@ namespace lfs::training {
                 lfs::core::random_choose(splat, max_cap);
                 syncTrainingSceneTopology(scene_, splat);
             }
+
+            // HDR, fresh start: the SH hold log radiance in ABSOLUTE units. The initial colours are LDR
+            // proxies p in [0,1] (point cloud / random / PLY): p is inverted through the mu-law and scaled by
+            // s, exactly like the MRNF blob seeds (mrnf.cpp) — a proxy white starts at the scene's P99
+            // radiance. A resumed checkpoint already stores log values.
+            if (params_.optimization.hdr && current_iteration_ == 0)
+                init_log_radiance_sh0(splat, params_.optimization.hdr_scale, params_.optimization.hdr_mu);
 
             // Re-initialize strategy with new parameters
             strategy_->set_training_dataset(train_dataset_);
@@ -3440,7 +3535,8 @@ namespace lfs::training {
                     } else {
                         output = fast_rasterize(
                             render_camera, model, background, params.optimization.mip_filter,
-                            {}, false, dilation_scale);
+                            {}, false, dilation_scale,
+                            color_activation_for(params.optimization.hdr, params.optimization.hdr_color_max));
                     }
 
                     raw_image = output.image;
@@ -6276,14 +6372,28 @@ namespace lfs::training {
                 }
 
                 // Per-camera maps cached from the target must not see a per-iteration background.
-                const lfs::core::Tensor source_gt = gt_image;
+                lfs::core::Tensor source_gt = gt_image;
                 lfs::core::Tensor stable_gt = gt_image;
+                bool gt_composited = false;
                 if (composite_target_alpha_ && pipelined_mask_.is_valid() &&
                     params_.optimization.mask_mode == lfs::core::param::MaskMode::None &&
                     params_.optimization.use_alpha_as_mask) {
                     gt_image = kernels::composite_over_background(gt_image, pipelined_mask_,
                                                                   bg_image.is_valid() ? bg_image : bg);
                     stable_gt = kernels::composite_over_background(source_gt, pipelined_mask_, background_);
+                    gt_composited = true;
+                }
+                // HDR: every consumer of the target (loss, edge map, thin-structure map, error map, blob
+                // seeding) reads the mu-law image of the P99-normalised linear radiance.
+                if (step_params.hdr) {
+                    gt_image = kernels::hdr_mulaw_forward(gt_image, step_params.hdr_scale, step_params.hdr_mu);
+                    if (gt_composited) {
+                        stable_gt = kernels::hdr_mulaw_forward(stable_gt, step_params.hdr_scale, step_params.hdr_mu);
+                        source_gt = kernels::hdr_mulaw_forward(source_gt, step_params.hdr_scale, step_params.hdr_mu);
+                    } else {
+                        stable_gt = gt_image;
+                        source_gt = gt_image;
+                    }
                 }
 
                 const bool fastgs_path = !step_params.gut;
@@ -6552,7 +6662,7 @@ namespace lfs::training {
                         fused_extra_gradients.scale_reg_normalizer =
                             log_scale_reg ? train_frame_scale_ : 1.0f;
                         fused_extra_gradients.erank_reg_weight = step_params.erank_reg;
-                        fused_extra_gradients.dc_reg_weight = step_params.dc_reg;
+                        fused_extra_gradients.dc_reg_weight = step_params.hdr ? 0.0f : step_params.dc_reg;
                         fused_extra_gradients.sh_rest_reg_weight = step_params.sh_rest_reg;
                         // Fused path shares the configured opacity_reg weight between gradient and loss accumulation.
                         fused_extra_gradients.opacity_reg_weight =
@@ -6579,7 +6689,7 @@ namespace lfs::training {
                             fused_erank_reg_loss_gpu = fused_erank_reg_loss_;
                             fused_extra_gradients.erank_reg_loss_out = fused_erank_reg_loss_gpu.ptr<float>();
                         }
-                        if (step_params.dc_reg > 0.0f) {
+                        if (step_params.dc_reg > 0.0f && !step_params.hdr) {
                             if (!fused_dc_reg_loss_.is_valid())
                                 fused_dc_reg_loss_ = lfs::core::Tensor::zeros({1}, lfs::core::Device::CUDA);
                             fused_dc_reg_loss_.zero_();
@@ -6756,7 +6866,8 @@ namespace lfs::training {
                                     *cam, strategy_->get_model(), bg,
                                     0, 0, 0, 0,
                                     step_params.mip_filter, bg_tile,
-                                    render_normal, render_depth);
+                                    render_normal, render_depth, 1.0f, true,
+                                    color_activation_for(step_params.hdr, step_params.hdr_color_max));
                                 if (rasterize_result) {
                                     output = std::move(rasterize_result->first);
                                     fast_ctx.emplace(std::move(rasterize_result->second));
@@ -7086,6 +7197,7 @@ namespace lfs::training {
 
                         lfs::core::Tensor corrected_image = output.image;
                         lfs::core::Tensor ppisp_input;
+                        lfs::core::Tensor hdr_x_saved; // signed render / s, for the mu-law backward
                         if (exposure_correction) {
                             if (ppisp_on) {
                                 nvtxRangePush("ppisp_forward");
@@ -7128,7 +7240,11 @@ namespace lfs::training {
                             }
                             // Final tonemapping: clamp to [0, 1] for loss computation.
                             // skip when PPISP is active — CRF already clamps.
-                            if (!ppisp_on) {
+                            // HDR: mu-law of the linear render instead (output.image stays linear).
+                            if (step_params.hdr) {
+                                corrected_image = kernels::hdr_mulaw_forward(
+                                    output.image, step_params.hdr_scale, step_params.hdr_mu, &hdr_x_saved);
+                            } else if (!ppisp_on) {
                                 corrected_image.clamp_(0.0f, 1.0f);
                             }
                         }
@@ -7881,6 +7997,12 @@ namespace lfs::training {
                         // consumed input keeps one fewer full-resolution image live per stage.
                         corrected_image = {};
                         lfs::core::Tensor raster_grad = tile_grad;
+                        if (step_params.hdr && hdr_x_saved.is_valid()) {
+                            // dL/d(linear render) = dL/dy * dy/dv, zero below black.
+                            kernels::hdr_mulaw_backward_(raster_grad, hdr_x_saved, step_params.hdr_scale,
+                                                         step_params.hdr_mu);
+                            hdr_x_saved = {};
+                        }
                         if (exposure_correction) {
                             if (grid_active_this_iter) {
                                 nvtxRangePush("bilateral_grid_backward");
@@ -8483,7 +8605,9 @@ namespace lfs::training {
                                     rendered_timelapse_output = gsplat_rasterize(*cam_to_use, strategy_->get_model(), background_,
                                                                                  1.0f, false, GsplatRenderMode::RGB, true);
                                 } else {
-                                    rendered_timelapse_output = fast_rasterize(*cam_to_use, strategy_->get_model(), background_);
+                                    rendered_timelapse_output = fast_rasterize(
+                                        *cam_to_use, strategy_->get_model(), background_, false, {}, false, 1.0f,
+                                        color_activation_for(step_params.hdr, step_params.hdr_color_max));
                                 }
 
                                 // Get folder name to save in by stripping file extension
@@ -8853,7 +8977,9 @@ namespace lfs::training {
             pipelined_config.prefetch_count = 8;
             pipelined_config.output_queue_size = 4;
             pipelined_config.io_threads = 2;
-            pipelined_config.use_16bit_color = params_.dataset.loading_params.use_16bit_color;
+            pipelined_config.use_16bit_color = params_.dataset.loading_params.use_16bit_color ||
+                                               params_.optimization.hdr;
+            pipelined_config.hdr_linear = params_.optimization.hdr;
 
             // Non-JPEG images (PNG, WebP) need CPU decoding - use more threads until cache warms
             constexpr size_t MIN_COLD_THREADS = 4;

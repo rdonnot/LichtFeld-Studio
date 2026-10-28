@@ -48,6 +48,9 @@ namespace lfs::io {
         bool decode_16bit = false;
         // Keeps floating-point files (EXR, float TIFF) at float precision instead of an integer decode.
         bool decode_float = false;
+        // HDR training: the decoded float image is linear radiance, unbounded above 1. Keeps the
+        // undistort path from clamping it to [0,1] and keeps it out of the derived (JPEG/JPEG 2000) cache.
+        bool hdr_linear = false;
         bool mask_grayscale = false;
         // Cold staging only; never stored in queued requests or cache entries.
         const MaskedImageFill* masked_fill = nullptr;

@@ -71,4 +71,14 @@ namespace fast_lfs::rasterization::config {
 
 namespace config = fast_lfs::rasterization::config;
 
+namespace fast_lfs::rasterization {
+    // Colour activation of the SH sum b (HDR fork). LDR: c = clamp(b, 0, color_max), color_max = 4.
+    // HDR (log_radiance): c = exp(b) below the cap, color_max at and above it, so a splat's radiance
+    // is unbounded in practice and the chain dL/db = c * dL/dc stays well conditioned.
+    struct ColorActivation {
+        float color_max = config::max_blend_color;
+        bool log_radiance = false;
+    };
+} // namespace fast_lfs::rasterization
+
 #undef DEF

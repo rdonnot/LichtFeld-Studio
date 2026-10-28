@@ -371,6 +371,12 @@ namespace lfs::core {
             float prune_opacity = 0.005f;
             size_t reset_every = 3'000;
             bool gut = false;
+            // HDR training (PLAN.md M2): the SH store log-radiance, the loss runs on mu-law of the
+            // P99-normalised image, the input is linear float (EXR). Off = LDR path, bit-identical.
+            bool hdr = false;
+            float hdr_mu = 5000.f;       // mu-law constant: y = log1p(mu*x)/log1p(mu)
+            float hdr_scale = 0.f;       // radiance normalisation s; 0 = P99 luminance of the training EXRs at load
+            float hdr_color_max = 0.f;   // absolute radiance cap: c = exp(min(b, ln cap)); 0 = 1000 * s, resolved at load
             bool undistort = false;
             float steps_scaler = 1.f;       // Scales training step counts; values <= 0 disable scaling
             float image_count_scaler = 1.f; // Share of steps_scaler applied by the GUI image-count auto-scale

@@ -1032,6 +1032,21 @@ namespace lfs::core {
                                    bilateral_grid_X, bilateral_grid_Y, bilateral_grid_W);
             if (gut && canonical_strategy_name(strategy) == kStrategyIGSPlus)
                 return "GUT and igs+ strategy cannot be used together";
+            if (hdr && (use_exposure_correction || use_bilateral_grid || use_ppisp || ppisp_use_controller ||
+                        ppisp_freeze_from_sidecar))
+                return "hdr cannot be combined with use_exposure_correction, use_bilateral_grid or use_ppisp "
+                       "(including the PPISP controller and sidecar freeze): those stages clamp to [0,1] and "
+                       "fit an LDR camera response; HDR trains linear radiance against the EXRs directly";
+            if (hdr && gut)
+                return "hdr cannot be combined with gut: the GUT (gsplat) path has no log-radiance colour "
+                       "activation; use the default fastgs rasterizer with --hdr";
+            if (hdr && !(hdr_mu > 0.f))
+                return std::format("hdr_mu must be positive (got {})", hdr_mu);
+            if (hdr && hdr_scale < 0.f)
+                return std::format("hdr_scale must be >= 0 (0 = measured at load, got {})", hdr_scale);
+            if (hdr && hdr_color_max != 0.f && !(hdr_color_max > 1.f))
+                return std::format("hdr_color_max must be 0 (= 1000 * hdr_scale, resolved at load) or > 1 (got {})",
+                                   hdr_color_max);
             if (use_exposure_correction &&
                 (use_bilateral_grid || use_ppisp || ppisp_use_controller || ppisp_freeze_from_sidecar)) {
                 return "use_exposure_correction cannot be combined with use_bilateral_grid, "

@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "core/logger.hpp"
 #include "core/native_fs.hpp"
 #include "core/path_utils.hpp"
 #include "io/loader.hpp"
@@ -14,6 +15,7 @@
 #include <cmath>
 #include <filesystem>
 #include <functional>
+#include <mutex>
 #include <span>
 #include <string>
 #include <string_view>
@@ -349,12 +351,42 @@ namespace lfs::io {
     // Check if a file has an image extension
     inline bool is_image_file(const std::filesystem::path& path) {
         static const std::vector<std::string> image_extensions = {
-            ".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"};
+            ".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".exr"};
 
         std::string ext = lfs::core::path_to_utf8(path.extension());
         detail::ascii_lower_inplace(ext);
 
         return std::find(image_extensions.begin(), image_extensions.end(), ext) != image_extensions.end();
+    }
+
+    // The sparse model names the file COLMAP registered (an 8-bit proxy, `pos_000.png`); an alternate
+    // images folder (`--images images_hdr`) may hold the same frame as another format (`pos_000.exr`).
+    // Returns the relative path with the extension of the file that exists, or `relative` unchanged.
+    inline std::filesystem::path resolve_image_extension(const std::filesystem::path& images_path,
+                                                         const std::filesystem::path& relative) {
+        if (relative.empty() || safe_exists(images_path / relative))
+            return relative;
+        static const char* const alternates[] = {".exr", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"};
+        for (const char* ext : alternates) {
+            std::filesystem::path candidate = relative;
+            candidate.replace_extension(ext);
+            if (candidate != relative && safe_exists(images_path / candidate)) {
+                // Say so once per file (the loaders resolve a name more than once per load).
+                static std::mutex logged_mutex;
+                static std::unordered_set<std::string> logged;
+                const auto key = lfs::core::path_to_utf8(images_path / candidate);
+                bool first = false;
+                {
+                    std::lock_guard<std::mutex> lock(logged_mutex);
+                    first = logged.insert(key).second;
+                }
+                if (first)
+                    LOG_INFO("Image '{}' not in '{}': using '{}' instead", lfs::core::path_to_utf8(relative),
+                             lfs::core::path_to_utf8(images_path), lfs::core::path_to_utf8(candidate));
+                return candidate;
+            }
+        }
+        return relative;
     }
 
     inline std::string strip_extension(const std::string& filename) {

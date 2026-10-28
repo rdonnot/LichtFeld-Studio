@@ -100,6 +100,7 @@ namespace lfs::core::args {
             OptimizationCliBinding{"--ppisp-controller", "ppisp_use_controller", Bool},
             OptimizationCliBinding{"--ppisp-freeze", "ppisp_freeze_from_sidecar", Bool},
             OptimizationCliBinding{"--gut", "gut", Bool},
+            OptimizationCliBinding{"--hdr", "hdr", Bool},
             OptimizationCliBinding{"--eval", "enable_eval", Bool},
             OptimizationCliBinding{"--eval-all", "eval_all", Bool},
             OptimizationCliBinding{"--eval-flip", "eval_flip", Bool},
@@ -912,6 +913,7 @@ namespace {
             ::args::Flag ppisp_freeze_from_sidecar(rendering_group, "ppisp_freeze", lfs::core::args::optimization_cli_help("--ppisp-freeze"), {"ppisp-freeze"});
             ::args::ValueFlag<std::string> ppisp_sidecar_path(rendering_group, "path", "Path to PPISP sidecar (.ppisp) used for frozen PPISP training", {"ppisp-sidecar"});
             ::args::Flag gut(rendering_group, "gut", lfs::core::args::optimization_cli_help("--gut"), {"gut"});
+            ::args::Flag hdr(rendering_group, "hdr", lfs::core::args::optimization_cli_help("--hdr"), {"hdr"});
 
             // =============================================================================
             // OUTPUT OPTIONS
@@ -1613,6 +1615,7 @@ namespace {
                                         bg_image_path_val = cli_option_present({"--bg-image-path"}) ? std::optional<std::string>(::args::get(bg_image_path)) : std::optional<std::string>(),
                                         random_flag = bool(random),
                                         gut_flag = bool(gut),
+                                        hdr_flag = bool(hdr),
                                         undistort_flag = bool(undistort),
                                         enable_sparsity_flag = bool(enable_sparsity),
                                         invert_masks_flag = bool(invert_masks),
@@ -1798,6 +1801,14 @@ namespace {
                 }
                 setFlag(random_flag, opt.random);
                 setFlag(gut_flag, opt.gut);
+                if (hdr_flag) {
+                    // --hdr: linear radiance against EXRs. The MRNF default exposure correction (PPISP +
+                    // bilateral grid) and the [0,1] colour prior have no meaning there; clear them so the
+                    // flag alone is a valid configuration instead of a validation error.
+                    opt.hdr = true;
+                    opt.use_exposure_correction = false;
+                    opt.dc_reg = 0.0f;
+                }
                 setFlag(undistort_flag, opt.undistort);
                 setFlag(enable_sparsity_flag, opt.enable_sparsity);
                 if (no_error_map_flag)
@@ -1883,7 +1894,8 @@ namespace {
                 note_opt("mip_filter", enable_mip_flag);
                 note_opt("use_bilateral_grid", use_bilateral_grid_flag);
                 note_opt("use_exposure_correction",
-                         use_exposure_correction_flag || no_exposure_correction_flag);
+                         use_exposure_correction_flag || no_exposure_correction_flag || hdr_flag);
+                note_opt("dc_reg", hdr_flag);
                 note_opt("use_ppisp", use_ppisp_flag || ppisp_controller_flag ||
                                           ppisp_freeze_from_sidecar_flag);
                 note_opt("ppisp_use_controller", ppisp_controller_flag);
@@ -1909,6 +1921,7 @@ namespace {
                 note_opt("bg_image_path", bg_image_path_val.has_value());
                 note_opt("random", random_flag);
                 note_opt("gut", gut_flag);
+                note_opt("hdr", hdr_flag);
                 note_opt("undistort", undistort_flag);
                 note_opt("enable_sparsity", enable_sparsity_flag);
                 note_opt("use_error_map", no_error_map_flag);

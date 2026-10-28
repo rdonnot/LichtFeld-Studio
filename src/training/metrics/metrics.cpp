@@ -23,6 +23,7 @@
 #include "io/loader.hpp"
 #include "io/nvcodec_image_loader.hpp"
 #include "io/pipelined_image_loader.hpp"
+#include "kernels/hdr_mulaw.hpp"
 #include "kernels/image_kernels.hpp"
 #include "lfs/kernels/ssim.cuh"
 #include "mesh_mask_kernels.cuh"
@@ -189,6 +190,12 @@ namespace lfs::training {
             load_params.output_uint8 = exact_uint8;
             load_params.decode_16bit = !exact_uint8;
             load_params.decode_float = !exact_uint8;
+            if (params.optimization.hdr) {
+                load_params.output_uint8 = false;
+                load_params.decode_16bit = true;
+                load_params.decode_float = true;
+                load_params.hdr_linear = true;
+            }
             load_params.skip_blob_cache = true;
             load_params.cuda_stream = lfs::core::getCurrentCUDAStream();
             if (params.optimization.undistort && camera.is_undistort_prepared() &&
@@ -208,7 +215,8 @@ namespace lfs::training {
         config.decoder_pool_size = 1;
         config.io_threads = 1;
         config.cold_process_threads = 1;
-        config.use_16bit_color = params.dataset.loading_params.use_16bit_color;
+        config.use_16bit_color = params.dataset.loading_params.use_16bit_color || params.optimization.hdr;
+        config.hdr_linear = params.optimization.hdr;
         return std::make_unique<lfs::io::PipelinedImageLoader>(config);
     }
 
@@ -652,7 +660,13 @@ namespace lfs::training {
                 if (!inputs.gt_image.is_valid() || inputs.gt_image.ndim() != 3 ||
                     inputs.gt_image.shape()[0] != 3)
                     return evaluation_error("failed to load evaluation image", LFS_SOURCE_SITE_CURRENT());
-                if (!load_params.output_uint8)
+                if (params.optimization.hdr) {
+                    // HDR: metrics in the mu-law domain of the P99-normalised linear radiance, on both sides.
+                    inputs.bit_depth = 32;
+                    inputs.gt_image = kernels::hdr_mulaw_forward(
+                        inputs.gt_image.to(lfs::core::DataType::Float32).to(lfs::core::Device::CUDA),
+                        params.optimization.hdr_scale, params.optimization.hdr_mu);
+                } else if (!load_params.output_uint8)
                     inputs.gt_image = image_for_metrics(inputs.gt_image.to(lfs::core::DataType::Float32), inputs.bit_depth);
 
                 if (undistorted_reference) {
@@ -1051,9 +1065,20 @@ namespace lfs::training {
                     return evaluation_error("mesh mask covers no evaluated pixel", LFS_SOURCE_SITE_CURRENT());
             }
 
-            if (rendered->raw_image.is_valid())
-                rendered->raw_image = rendered->raw_image.clamp(0.0f, 1.0f);
-            rendered->output.image = image_for_metrics(rendered->output.image, inputs.bit_depth);
+            lfs::core::Tensor linear_render;
+            if (params.optimization.hdr) {
+                linear_render = rendered->output.image;
+                rendered->output.image = kernels::hdr_mulaw_forward(
+                    linear_render, params.optimization.hdr_scale, params.optimization.hdr_mu);
+                // A [0,1] clamp on radiance is meaningless and HDR has no appearance model, so the raw
+                // render is the corrected one: "Bias (raw)" is measured in the mu-law domain as well.
+                if (rendered->raw_image.is_valid())
+                    rendered->raw_image = rendered->output.image;
+            } else {
+                if (rendered->raw_image.is_valid())
+                    rendered->raw_image = rendered->raw_image.clamp(0.0f, 1.0f);
+                rendered->output.image = image_for_metrics(rendered->output.image, inputs.bit_depth);
+            }
 
             assert(inputs.gt_image.ndim() == 3);
             assert(inputs.gt_image.shape()[0] == 3);
@@ -1075,6 +1100,7 @@ namespace lfs::training {
                 .inputs = std::move(inputs),
                 .output = std::move(rendered->output),
                 .raw_image = std::move(rendered->raw_image),
+                .linear_render = std::move(linear_render),
                 .metric_mask = std::move(metric_mask),
                 .validity_mask = std::move(validity_mask),
                 .render_geometry = geometry,
@@ -1349,6 +1375,8 @@ namespace lfs::training {
         report_file << "==============================================\n";
         report_file << "Output Directory: " << lfs::core::path_to_utf8(output_dir_) << "\n";
         report_file << "JPEG Decoder: " << lfs::io::NvCodecImageLoader::jpeg_decoder() << "\n";
+        if (!photometric_domain_.empty())
+            report_file << "Photometric domain: " << photometric_domain_ << "\n";
 
         // Get current time
         const auto now = std::chrono::system_clock::now();
@@ -1393,9 +1421,10 @@ namespace lfs::training {
                 report_file << "FLIP:  " << *final.flip << "\n";
             report_file << "Time per image: " << final.elapsed_time << " seconds\n";
             report_file << "Number of Gaussians: " << final.num_gaussians << "\n";
-            report_file << "Bias (raw):  (" << final.bias_r << ", " << final.bias_g << ", " << final.bias_b << ")\n";
-            report_file << "Bias (corrected):  (" << final.bias_corr_r << ", " << final.bias_corr_g << ", "
-                        << final.bias_corr_b << ")\n";
+            report_file << "Bias (raw" << bias_domain_suffix_ << "):  (" << final.bias_r << ", " << final.bias_g << ", "
+                        << final.bias_b << ")\n";
+            report_file << "Bias (corrected" << bias_domain_suffix_ << "):  (" << final.bias_corr_r << ", "
+                        << final.bias_corr_g << ", " << final.bias_corr_b << ")\n";
             if (final.normal_angle_deg && std::isfinite(*final.normal_angle_deg)) {
                 report_file << "Normal angle (deg): " << *final.normal_angle_deg << "\n";
             }
@@ -1450,8 +1479,15 @@ namespace lfs::training {
         _ssim_metric = std::make_unique<SSIM>(true); // apply_valid_padding = true
 
         // Report files go to the output folder; without one, results are only returned.
-        if (!params.dataset.output_path.empty())
+        if (!params.dataset.output_path.empty()) {
             _reporter = std::make_unique<MetricsReporter>(params.dataset.output_path);
+            if (params.optimization.hdr)
+                _reporter->set_photometric_domain(std::format(
+                    "mu-law (HDR): PSNR/SSIM/LPIPS on log1p(mu*x)/log1p(mu), x = radiance / s, mu = {}, s = {}; "
+                    "linear renders in eval_step_N/<image>.exr; the bias rows are mu-law too (no raw [0,1] clamp)",
+                    params.optimization.hdr_mu, params.optimization.hdr_scale),
+                                                 ", mu-law");
+        }
     }
 
     void MetricsEvaluator::write_training_config(const lfs::core::param::TrainingParameters& params) const {
@@ -1545,7 +1581,8 @@ namespace lfs::training {
                     output = fast_rasterize(
                         render_camera, splatData_mutable, background,
                         _params.optimization.mip_filter, {}, render_normal,
-                        dilation_scale);
+                        dilation_scale,
+                        color_activation_for(_params.optimization.hdr, _params.optimization.hdr_color_max));
                 }
                 auto raw_image = output.image;
                 if (appearance_ && output.image.is_valid())
@@ -1681,6 +1718,14 @@ namespace lfs::training {
                 skipped_images++;
                 continue;
             }
+
+            if (_params.optimization.hdr && _params.optimization.enable_save_eval_images &&
+                prepared->linear_render.is_valid()) {
+                // The linear render beside the PNG: eval_step_N/<stem>.exr (tools/eval/hdr_metrics.py reads it).
+                if (!lfs::core::save_image_exr(eval_dir / (image_stems[image_idx] + ".exr"), prepared->linear_render))
+                    LOG_WARN("Eval: could not write the HDR render of '{}'", cam->image_name());
+            }
+            prepared->linear_render = {};
 
             auto gt_image = prepared->inputs.gt_image;
             auto mask = prepared->metric_mask;

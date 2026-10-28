@@ -156,6 +156,85 @@ old path (`memcmp`). `ctest -L fast`; `ldr_regression.py` on `smoke_ldr` ±0.1 d
 every step, no NaN in `eval_step_*/*.exr`, μ-law PSNR > the proxy-LDR baseline, `hdr_metrics.py` CRF PSNR per held-out
 exposure logged; `_refine_weight_max` histogram overlaps the LDR run's.
 
+### M2 implementation notes (hdr-m2, 2026-10-27) — what was built, what deviates, what is left
+
+Built as designed, commit by commit on `hdr-m2`: the flag and parameters (`hdr`, `hdr_mu`, `hdr_scale`, `hdr_color_max`;
+`--hdr` clears MRNF's `use_exposure_correction` and `dc_reg`, validation refuses the grid / PPISP / `gut` with the reason
+in the message), the linear EXR input (`.exr` is an image, `LoadParams::hdr_linear` + `PipelinedLoaderConfig::hdr_linear`
+skip the undistort clamp AND the derived JPEG/JPEG 2000 cache — that cache would have clipped radiance > 1 silently —
+`use_16bit_color` forced, P99 `s` over ≤ 16 EXRs written back before the evaluator copies the params), the rasterizer
+(`ColorActivation{color_max, log_radiance}` threaded `fast_rasterize_forward` → `forward_raw` → kernels, stored in the
+context for the backward; `preprocess_cu<bool LOG_RADIANCE>`; `log_radiance_color` in `kernel_utils.cuh`; runtime blend cap;
+`dL/db = c·dL/dc` in the blend backward), the μ-law loss (`kernels/hdr_mulaw.cu`; GT transformed once after the composite so
+`source_gt`/`stable_gt`/`gt_image` all feed the edge, thin-structure, error maps and blob seeding in μ-law), the eval
+(`save_image_exr` on OpenEXRCore, `eval_step_N/<stem>.exr` of the LINEAR render, PSNR/SSIM/LPIPS on `mulaw(x/s)`, the domain
+named in `metrics_report.txt`), `tests/test_hdr_color_chain.cpp`, `tools/synth/make_hdr_dataset.py`.
+
+**Deviations.** (1) *Cap semantics:* a channel at or above `ln cmax` is stored as exactly `color_max` and the backward's
+cap mask is STRICT in HDR (`c < color_max`), so "0 above the cap" holds without the forward/backward disagreeing on
+`expf(logf(cmax))` rounding; LDR keeps `<=`. (2) *Where the activation lives:* not on `FastGSSettings` (unused by any
+caller) but as a trailing defaulted parameter of every entry point and a field of `FastRasterizeContext`; every training
+render passes `color_activation_for(hdr, hdr_color_max)` — trainer, eval (`metrics.cpp`), timelapse, POPSpa scores.
+`application.cpp`'s video render of a loaded model and the viewer do not (M4). (3) *Init in the trainer, not at the init
+sites:* `Trainer::init_log_radiance_sh0` rewrites sh0 once on a fresh start (covers point cloud, `--random`, PLY); MRNF
+blob seeds invert the μ-law before taking the log (`mrnf.cpp`). (4) *Loader:* `--images <folder>` resolves a same-stem
+image of another extension (`resolve_image_extension`) — the M1 output names `pos_000.png` in its sparse model and
+`pos_000.exr` in `images_hdr`. (5) *`hdr_color_max` is absolute* and the M1 merge is in sensor units (`s` = 2419 on
+`smoke_hdr` vs 9.4 on the synthetic truth): the lamp reaches the 1e4 cap (max rendered radiance 9631). Either the cap
+should scale with `s` (`cmax = k·s`) or the plugin should normalise its EXRs — decide in M3/M5 with the file format.
+(6) *μ-law PSNR vs the proxy baseline* is not one number: the proxy model's renders live in the proxy's tone curve.
+Reported side by side below. (7) `tests/image_codecs` is skipped when the OpenEXR C++ library is absent (core-only port).
+
+**Measured (3000 iterations, `--test-every 8 --eval`, GPU shared with another training).**
+- LDR bit-identity: `ldr_reeval.py` on the frozen M0 `baseline_a` project with this binary — "metrics: identical",
+  "eval PNGs: 16 compared, identical". Fresh LDR smoke on `smoke_ldr`: 25.58 dB (stochastic; not a regression number).
+- HDR on the M1 output `smoke_hdr --images images_hdr --hdr`: s = 2419.3, 27.51 dB μ-law in-app, `hdr_metrics.py`
+  27.49 dB mean over the 5 held-out views (29.93 on `pos_008`) against the merged EXRs, no NaN, max radiance 9631.
+- HDR on the synthetic truth `smoke_hdr_gt --images images_hdr --random --hdr`: s = 9.39, 32.98 dB μ-law, 26.5–35.5 per
+  view, max radiance 458 (truth 404), no NaN. Loss finite every step (0.12 → 0.033).
+- Proxy-LDR baseline on the same poses (`smoke_hdr --images images`): 29.26 dB PSNR in its own 8-bit domain.
+
+**Left for "Done when".** A like-for-like proxy comparison (render the proxy model, invert the plugin's tone curve, μ-law
+PSNR against the merged EXR — `tools/eval`), the `_refine_weight_max` histogram overlap check, the CRF/exposure PSNR per
+held-out exposure through `hdr_metrics.py ldr-psnr`, and the cap-vs-scale decision in (5).
+
+**Review follow-ups applied (hdr-architect, 2026-10-28, on top of 2ef3c0155).**
+1. *Cap and init relative to the scale s, radiance stays absolute* — decision for (5): `hdr_color_max = 0` by default
+   means `1000 · s`, resolved in `Trainer::initialize` right after `s` and written back like `s`, so the saved config, a
+   resume and the PLY carry the ABSOLUTE value the kernels used (validation accepts 0; the resolved cap is logged).
+   `init_log_radiance_sh0(splat, s, μ)` now seeds in absolute units — the proxies were seeded at `ln p`, i.e. `ln s`
+   (7.8 nats on `smoke_hdr`) below the scene. DEVIATION from the review's exact formula, measured: the review's
+   `ln(clamp(p,1e-3,1)·s)` gave 32.91 dB but depth AbsRel against the sparse points 0.13 → 0.75 (same with the cap
+   pinned at 1e4: 33.16 dB / 0.74, so the init, not the cap) — the proxy is display-referred, `p·s` puts a mid-grey at
+   ~s/2 ≈ 1200 and the optimiser darkens it through opacity faster than log colour can fall. Reading `p` as the
+   loss domain's μ-law value and inverting it like the MRNF blob seeds (`x = expm1(p·ln(1+μ))/μ`, radiance `x·s`,
+   `sh0 = (ln max(x·s, 1e-3) − 0.5)/SH_C0`) gives 34.52 dB and AbsRel 0.080 (proxy-LDR run: 0.053); both inits are
+   now literally the same formula. Golden JSONs / the Python stub follow the new cap default.
+2. `image_exr.cpp` `encode_exr`: the encode pipeline is destroyed with `exr_encoding_destroy` BEFORE `exr_finish` frees
+   its context (it was destroyed after, by the RAII guard); channels are declared `EXR_PERCEPTUALLY_LOGARITHMIC`
+   (pLinear = 0), OpenEXR's convention for scene-linear RGB — `EXR_PERCEPTUALLY_LINEAR` was wrong for radiance.
+3. `pop_scores.cu` clamped the splat colour at `config::max_blend_color` (4) while the POPSpa forward already applied
+   the HDR activation: `accumulate_pop_scores` takes the forward's `color_max` (`ctx.color_activation.color_max`).
+4. `metrics.cpp`: under HDR the raw render is no longer `clamp(0,1)`-ed (meaningless on radiance); HDR has no
+   appearance model, so the raw image IS the corrected μ-law image and both bias rows read "Bias (raw, mu-law)" /
+   "Bias (corrected, mu-law)"; the "Photometric domain" line says so.
+5. `resolve_image_extension` logs (info, once per file) when it substitutes a sibling extension.
+6. Numbers after the change (`smoke_hdr --images images_hdr --hdr`, 3000 it, `--test-every 8 --eval`): `out/m2_hdr_v3`
+   s = 2421.4, cap = 2 421 400 (1000·s, in `training_config.json`), **34.52 dB** μ-law (was 27.51), SSIM 0.939,
+   LPIPS 0.257, depth AbsRel 0.080 (was 0.133), max rendered radiance **15 835** (was 9631 at the 1e4 cap; the lamp
+   truth ≈ 20 400), no NaN in the eval EXRs, loss at iteration 100/200/300 = 0.171/0.164/0.114 (was
+   0.878/0.929/0.761 — the dark init cost the first ~600 iterations), final 0.027 (was 0.060). Intermediate runs kept
+   for the record: `out/m2_hdr_v2` (review formula, 32.91 dB / AbsRel 0.746), `out/m2_hdr_v2_cap1e4` (same init, cap
+   1e4: 33.16 dB / 0.739, max radiance 10 000). LDR: `ldr_reeval.py` on `baseline_a` with this binary — metrics
+   identical, 16 eval PNGs identical. `ctest -R hdr`, `PopScoreBackends`/POPSpa and `TrainingParametersTest` pass.
+
+*Owed to the next milestones (from the same review).* **M5:** the PLY must carry `comment hdr_log_sh 1`,
+`comment hdr_scale <s>`, `comment hdr_color_max <absolute cap>` — a stock viewer shows log values otherwise and the
+cap cannot be reconstructed from `s` alone once a user overrides it. **M4:** the viewer SH shader needs
+`exp(min(b, ln cmax))` and a LOG-exposure range — the scene's natural exposure is `1/s` (≈ 4e-4 on `smoke_hdr`), far
+below the viewer's 0.1–8 slider (`py_rendering.cpp:732`). **M3:** the validation at `parameters.cpp:1035-1043`
+(`hdr` refuses PPISP / the grid) must be re-opened for the exposure-only PPISP.
+
 ---
 
 ## M3 — Train directly from brackets (exposure model)

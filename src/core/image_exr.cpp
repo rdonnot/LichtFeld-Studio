@@ -116,10 +116,9 @@ namespace lfs::core::image_codecs {
             std::array<int, 4> channels{-1, -1, -1, -1};
         };
 
-        bool open(const std::filesystem::path& path, Context& context, Header& header,
-                  std::string& error) {
+        // Keep the library's useful details without printing or throwing through C.
+        exr_context_initializer_t make_initializer(std::string& error) {
             exr_context_initializer_t init = EXR_DEFAULT_CONTEXT_INITIALIZER;
-            // Keep the library's useful details without printing or throwing through C.
             init.user_data = &error;
             init.error_handler_fn = [](exr_const_context_t ctxt, exr_result_t, const char* message) noexcept {
                 void* user = nullptr;
@@ -137,6 +136,12 @@ namespace lfs::core::image_codecs {
                     }
                 }
             };
+            return init;
+        }
+
+        bool open(const std::filesystem::path& path, Context& context, Header& header,
+                  std::string& error) {
+            const exr_context_initializer_t init = make_initializer(error);
             const auto name = path_to_utf8(native_fs::native_path(path));
             if (!check(exr_start_read(&context.value, name.c_str(), &init), error) ||
                 !check(exr_get_storage(context.value, 0, &header.storage), error) ||
@@ -378,5 +383,97 @@ namespace lfs::core::image_codecs {
         }
         result = std::move(image);
         return true;
+    }
+
+    bool encode_exr(const std::filesystem::path& path, const float* rgb_chw, const int width, const int height,
+                    std::string& error) {
+        error.clear();
+        if (rgb_chw == nullptr || width <= 0 || height <= 0) {
+            error = "EXR: nothing to write";
+            return false;
+        }
+        const exr_context_initializer_t init = make_initializer(error);
+        const auto name = path_to_utf8(native_fs::native_path(path));
+        Context context;
+        int part = 0;
+        if (!check(exr_start_write(&context.value, name.c_str(), EXR_WRITE_FILE_DIRECTLY, &init), error) ||
+            !check(exr_add_part(context.value, "rgb", EXR_STORAGE_SCANLINE, &part), error) ||
+            !check(exr_initialize_required_attr_simple(context.value, part, width, height, EXR_COMPRESSION_ZIP), error))
+            return false;
+        for (const char* channel : {"R", "G", "B"}) {
+            // Scene-linear radiance: pLinear = 0 (EXR_PERCEPTUALLY_LOGARITHMIC), OpenEXR's convention for RGB.
+            if (!check(exr_add_channel(context.value, part, channel, EXR_PIXEL_FLOAT, EXR_PERCEPTUALLY_LOGARITHMIC, 1, 1),
+                       error))
+                return false;
+        }
+        const exr_attr_chlist_t* channels = nullptr;
+        int32_t lines_per_chunk = 0;
+        if (!check(exr_write_header(context.value), error) ||
+            !check(exr_get_channels(context.value, part, &channels), error) ||
+            !check(exr_get_scanlines_per_chunk(context.value, part, &lines_per_chunk), error))
+            return false;
+        if (channels == nullptr || channels->num_channels != 3 || lines_per_chunk <= 0) {
+            error = "EXR: unexpected channel layout while writing";
+            return false;
+        }
+        // The pipeline's channels follow the (sorted) channel list; map each to its plane by name.
+        std::array<int, 3> plane_of_channel{};
+        for (int i = 0; i < 3; ++i) {
+            const char* channel_name = channels->entries[i].name.str;
+            const char key = channel_name && channel_name[0] ? channel_name[0] : '\0';
+            plane_of_channel[i] = key == 'R' ? 0 : key == 'G' ? 1 : key == 'B' ? 2 : -1;
+            if (plane_of_channel[i] < 0) {
+                error = "EXR: unexpected channel name while writing";
+                return false;
+            }
+        }
+        const size_t plane = static_cast<size_t>(width) * static_cast<size_t>(height);
+        struct EncodePipeline {
+            exr_encode_pipeline_t value = EXR_ENCODE_PIPELINE_INITIALIZER;
+            exr_const_context_t context;
+            bool initialized = false;
+            ~EncodePipeline() {
+                if (initialized)
+                    exr_encoding_destroy(context, &value);
+            }
+        } pipeline{EXR_ENCODE_PIPELINE_INITIALIZER, context.value, false};
+        for (int y = 0; y < height; y += lines_per_chunk) {
+            exr_chunk_info_t chunk{};
+            if (!check(exr_write_scanline_chunk_info(context.value, part, y, &chunk), error))
+                return false;
+            const auto status = pipeline.initialized
+                                    ? exr_encoding_update(context.value, part, &chunk, &pipeline.value)
+                                    : exr_encoding_initialize(context.value, part, &chunk, &pipeline.value);
+            if (!check(status, error))
+                return false;
+            pipeline.initialized = true;
+            if (pipeline.value.channel_count != 3) {
+                error = "EXR: unexpected pipeline channel count while writing";
+                return false;
+            }
+            for (int i = 0; i < pipeline.value.channel_count; ++i) {
+                auto& channel = pipeline.value.channels[i];
+                channel.user_data_type = EXR_PIXEL_FLOAT;
+                channel.user_bytes_per_element = sizeof(float);
+                channel.user_pixel_stride = sizeof(float);
+                channel.user_line_stride = static_cast<int32_t>(static_cast<size_t>(width) * sizeof(float));
+                channel.encode_from_ptr = reinterpret_cast<const uint8_t*>(
+                    rgb_chw + static_cast<size_t>(plane_of_channel[i]) * plane +
+                    static_cast<size_t>(chunk.start_y) * static_cast<size_t>(width) + static_cast<size_t>(chunk.start_x));
+            }
+            if (!check(exr_encoding_choose_default_routines(context.value, part, &pipeline.value), error) ||
+                !check(exr_encoding_run(context.value, part, &pipeline.value), error))
+                return false;
+        }
+        // The pipeline belongs to the context: destroy it BEFORE exr_finish frees that context.
+        if (pipeline.initialized) {
+            pipeline.initialized = false;
+            if (!check(exr_encoding_destroy(context.value, &pipeline.value), error))
+                return false;
+        }
+        // Finish explicitly: this writes the chunk table and reports a failure the destructor would swallow.
+        exr_context_t finished = context.value;
+        context.value = nullptr;
+        return check(exr_finish(&finished), error);
     }
 } // namespace lfs::core::image_codecs

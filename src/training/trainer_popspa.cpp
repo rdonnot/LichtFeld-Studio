@@ -269,8 +269,11 @@ namespace lfs::training {
                         if (!scored)
                             return scored;
                     } else {
-                        auto rendered = fast_rasterize_forward(*cam, model, bg, 0, 0, 0, 0,
-                                                               params_.optimization.mip_filter, image_bg);
+                        auto rendered = fast_rasterize_forward(
+                            *cam, model, bg, 0, 0, 0, 0, params_.optimization.mip_filter, image_bg,
+                            /*render_normal=*/false, /*render_depth=*/true, /*dilation_scale=*/1.0f,
+                            /*update_screen_share=*/true,
+                            color_activation_for(params_.optimization.hdr, params_.optimization.hdr_color_max));
                         if (!rendered)
                             return lfs::Status::failure(std::move(rendered).error());
                         auto scored = fast_accumulate_pop_scores(rendered->second, popspa_controller_.scores());

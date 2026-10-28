@@ -4,7 +4,13 @@
 # Testing module - comprehensive tests for all components
 
 if(BUILD_TESTS OR BUILD_FORMAT_TESTS)
+    # The codec tests link the OpenEXR C++ library; a core-only OpenEXR port (OpenEXRCore, what the app
+# needs) has no OpenEXR::OpenEXR target, and the rest of the suite must still configure.
+if(TARGET OpenEXR::OpenEXR)
     add_subdirectory(image_codecs)
+else()
+    message(STATUS "tests/image_codecs skipped: OpenEXR::OpenEXR (C++ library) is not installed")
+endif()
 endif()
 
 # =============================================================================
@@ -793,6 +799,8 @@ set(TEST_FILES
     test_fastgs_fuzz.cpp
     test_fastgs_tile_culling_boundary.cpp
     fastgs_tile_culling_boundary_cuda.cu
+    test_hdr_color_chain.cpp
+    hdr_color_chain_cuda.cu
     test_sh_swizzle_layout.cpp
     test_shn_bda_index_math.cpp
     test_python_io.cpp
@@ -1393,6 +1401,16 @@ add_test(NAME lichtfeld.fast
         --gtest_color=no
 )
 set_tests_properties(lichtfeld.fast PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    LABELS "fast;gpu"
+    TIMEOUT 60
+)
+
+# HDR fork (PLAN.md M2): the colour chain and the mu-law loss, addressable as `ctest -L fast -R hdr`.
+add_test(NAME lichtfeld.hdr_color_chain
+    COMMAND $<TARGET_FILE:lichtfeld_tests> "--gtest_filter=HdrColorChainTest.*" --gtest_color=no
+)
+set_tests_properties(lichtfeld.hdr_color_chain PROPERTIES
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     LABELS "fast;gpu"
     TIMEOUT 60
