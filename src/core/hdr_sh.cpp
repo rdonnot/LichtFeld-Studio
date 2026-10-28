@@ -262,8 +262,9 @@ namespace lfs::core::hdr {
                     X = Tensor::cat({dc, rest}, 1);
                 }
                 Tensor values = X.mm(proj.basis).contiguous(); // [n*3, D]
+                // mode 1 (linear -> log) floors each direction at 1 % of the splat's DC: X's column 0, row stride B.
                 cuda::apply_per_direction(values.ptr<float>(), n, static_cast<size_t>(proj.D), mode, color_max, exposure,
-                                          static_cast<int>(tone), values.stream());
+                                          static_cast<int>(tone), values.stream(), X.ptr<float>(), B);
                 cudaStreamSynchronize(values.stream());
                 Tensor A = values.mm(proj.pinv_t); // [n*3, B]
                 Tensor A3 = A.reshape(TensorShape{n, 3, B}).permute({0, 2, 1}).contiguous(); // [n, B, 3]

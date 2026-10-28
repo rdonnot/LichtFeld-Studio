@@ -1211,7 +1211,12 @@ namespace lfs::core {
             auto result = simplify_workset(workset, options, std::move(progress));
             if (!result)
                 return std::unexpected(result.error());
-            return make_splat_from_workset(*result, Device::CUDA);
+            auto splat = make_splat_from_workset(*result, Device::CUDA);
+            // HDR: the merged coefficients are averages of LOG radiance (a geometric mean of radiance);
+            // the state travels with them so the result is still read, exported and shown as HDR.
+            if (splat)
+                splat->set_hdr(input.hdr());
+            return splat;
         } catch (const std::exception& e) {
             LOG_ERROR("simplify_splats failed: {}", e.what());
             return std::unexpected(e.what());
@@ -1234,6 +1239,8 @@ namespace lfs::core {
 
             SplatSimplifyResult out;
             out.splat = make_splat_from_workset(*result, Device::CUDA);
+            if (out.splat)
+                out.splat->set_hdr(input.hdr());
             out.merge_tree = std::move(history.tree);
             return out;
         } catch (const std::exception& e) {

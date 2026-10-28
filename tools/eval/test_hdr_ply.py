@@ -70,7 +70,7 @@ def expect_ok(res: subprocess.CompletedProcess) -> None:
     assert res.returncode == 0, res.stdout[-2000:] + res.stderr[-2000:]
 
 
-@pytest.mark.parametrize("degree", [0, 3])
+@pytest.mark.parametrize("degree", [0, 1, 2, 3])
 def test_comments_round_trip(tmp_path: Path, degree: int):
     src = tmp_path / "log.ply"
     make_log_ply(src, 512, degree, 0.3)
@@ -193,3 +193,101 @@ def test_ldr_ply_untouched(tmp_path: Path):
     assert hdr["mode"] is None
     for name in ("f_dc_0", "f_rest_0", "opacity"):
         assert np.array_equal(d[name], data[name])
+
+
+@pytest.mark.parametrize("degree,bound_p99", [(1, 0.02), (2, 0.03)])
+def test_degree1_2_round_trip_bounded(tmp_path: Path, degree: int, bound_p99: float):
+    """Degrees 1 and 2 project on 32 / 64 directions; with sigma-0.1 lobes the error stays near degree 3's."""
+    src = tmp_path / "log.ply"
+    make_log_ply(src, 2048, degree, 0.1)
+    lin = tmp_path / "linear.ply"
+    expect_ok(convert(src, lin))
+    _, hsrc, dsrc = hdr_ply.read_ply(src)
+    _, hlin, dlin = hdr_ply.read_ply(lin)
+    assert hdr_ply.sh_columns(dlin)[2] == degree
+    dirs = hdr_ply.random_directions(1024, 11)
+    q = hdr_ply.rel_error_quantiles(hdr_ply.radiance(dsrc, hsrc, dirs), hdr_ply.radiance(dlin, hlin, dirs), 1e-3)
+    print(f"degree {degree}: linear-vs-log radiance relative error {q}")
+    assert q["p99"] < bound_p99, q
+
+
+def test_foreign_linear_ply_with_negative_lobes(tmp_path: Path):
+    """A `lichtfeld_hdr linear` PLY written by another tool: linear radiance whose expansion goes negative in some
+    directions. The reader clamps at 1e-6 before the log; the re-exported linear file matches where the source
+    was positive and is ~0 (not NaN, not huge) where it was negative."""
+    rng = np.random.default_rng(5)
+    n, K = 1024, 3
+    fields = [("x", "<f4"), ("y", "<f4"), ("z", "<f4")] + [(f"f_dc_{i}", "<f4") for i in range(3)]
+    fields += [(f"f_rest_{i}", "<f4") for i in range(3 * K)] + [("opacity", "<f4")]
+    fields += [(f"scale_{i}", "<f4") for i in range(3)] + [(f"rot_{i}", "<f4") for i in range(4)]
+    data = np.zeros(n, dtype=np.dtype(fields))
+    radiance_dc = rng.uniform(1.0, 500.0, (n, 3))
+    for i in range(3):
+        data[f"f_dc_{i}"] = (radiance_dc[:, i] - 0.5) / hdr_ply.C0
+    # lobes of ~1.3x the DC (sigma 1.5 x Y ~ 0.49 x sqrt(3)): the expansion is negative on part of the sphere
+    rest = rng.normal(0.0, 1.5, (n, K, 3)) * radiance_dc[:, None, :]
+    flat = rest.transpose(0, 2, 1).reshape(n, 3 * K)
+    for i in range(3 * K):
+        data[f"f_rest_{i}"] = flat[:, i]
+    data["rot_0"] = 1.0
+    data["scale_0"] = data["scale_1"] = data["scale_2"] = -4.0
+    src = tmp_path / "foreign_linear.ply"
+    hdr_ply.write_ply(src, data, ["lichtfeld_hdr LINEAR", "hdr_scale 250.0"])  # upper case on purpose; no cap
+    dirs = hdr_ply.random_directions(512, 2)
+    _, hsrc, dsrc = hdr_ply.read_ply(src)
+    r_src = hdr_ply.radiance(dsrc, hsrc, dirs)
+    assert (r_src < 0).mean() > 0.05, "the fixture should be negative on part of the sphere"
+    out = tmp_path / "relinear.ply"
+    expect_ok(convert(src, out))
+    _, hout, dout = hdr_ply.read_ply(out)
+    assert hout["mode"] == "linear" and hout["scale"] == pytest.approx(250.0) and hout["color_max"] == pytest.approx(250000.0)
+    r_out = hdr_ply.radiance(dout, hout, dirs)
+    assert np.all(np.isfinite(r_out))
+    pos = r_src > 0.05 * radiance_dc[:, None, :]
+    rel = np.abs(r_out[pos] - r_src[pos]) / r_src[pos]
+    print(f"foreign linear with negative lobes: positive-side relative error median {np.median(rel):.4f}, p90 {np.percentile(rel, 90):.4f}")
+    # A degree-1 LOG basis cannot hold a function that is clipped over part of the sphere: the fit spreads the
+    # clipped region into the bright side. Measured 2026-10-28 (lobes ~1.3x the DC, floor 1 % of the DC): median
+    # 20 %, p90 70 % on the positive side — with the old absolute 1e-6 floor it was 97 % / 4000 %. Such files are
+    # not what LichtFeld writes; the test pins that the reader stays finite, bounded and far from the old failure.
+    assert np.median(rel) < 0.3
+    assert r_out.max() < 2.0 * r_src.max()
+
+
+def test_streaming_rad_refuses_hdr_unless_baked(tmp_path: Path):
+    """The out-of-core PLY->RAD converter ignores the header; an HDR PLY must not reach it."""
+    src = tmp_path / "log.ply"
+    make_log_ply(src, 512, 1, 0.2)
+    res = convert(src, tmp_path / "out.rad", "--lod-builder", "octree")
+    assert res.returncode != 0 and "bake" in (res.stdout + res.stderr).lower()
+    res = convert(src, tmp_path / "tiled.rad", "--tiles", "2x2", "--hdr-export", "baked")
+    assert res.returncode != 0
+    expect_ok(convert(src, tmp_path / "baked.rad", "--lod-builder", "octree", "--hdr-export", "baked"))
+    assert (tmp_path / "baked.rad").stat().st_size > 0
+
+
+DATASET = REPO / "data" / "smoke_hdr"
+
+
+@pytest.mark.skipif(not (DATASET / "images_hdr").exists(), reason="data/smoke_hdr not present")
+def test_project_keeps_hdr_state(tmp_path: Path):
+    """A .licht project saved with an HDR model reopens as HDR: train 10 iterations from a log PLY, then convert
+    the project to a PLY — the header must say linear with the file's s and cap."""
+    src = tmp_path / "log.ply"
+    make_log_ply(src, 512, 1, 0.2)
+    out = tmp_path / "run"
+    cmd = [str(BINARY), "--headless", "--train", "-d", str(DATASET), "--images", "images_hdr", "--hdr",
+           "--init", str(src), "--iter", "10", "-o", str(out)]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    assert res.returncode == 0, res.stdout[-3000:] + res.stderr[-3000:]
+    project = out / "project.licht"
+    assert project.exists()
+    ply = tmp_path / "from_project.ply"
+    expect_ok(convert(project, ply))
+    lines, hdr, _ = hdr_ply.read_ply(ply)
+    assert hdr["mode"] == "linear", lines
+    assert hdr["scale"] == pytest.approx(SCALE, rel=1e-5)
+    assert hdr["color_max"] == pytest.approx(CAP, rel=1e-5)
+    # and the LDR formats still refuse the reopened model unless baked
+    res = convert(project, tmp_path / "from_project.spz")
+    assert res.returncode != 0 and "bake" in (res.stdout + res.stderr).lower()

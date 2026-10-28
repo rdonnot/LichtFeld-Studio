@@ -617,7 +617,10 @@ namespace lfs::io {
             return word;
         };
         const std::string_view key = take_word();
-        const std::string_view value = take_word();
+        std::string value_lower(take_word());
+        for (auto& c : value_lower)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        const std::string_view value = value_lower;
         const auto parse_float = [](const std::string_view text, float& out) {
             float parsed = 0.0f;
             const auto* const begin = text.data();
@@ -4353,6 +4356,17 @@ namespace lfs::io {
             has_rotation |= name == "rot_0";
         });
         return complete_header && has_opacity && has_scale && has_rotation;
+    }
+
+    bool is_hdr_ply(const std::filesystem::path& filepath) {
+        if (!lfs::core::native_fs::exists(filepath))
+            return false;
+        FastPropertyLayout layout;
+        const bool complete_header = visit_bounded_ply_header(filepath, [&](const std::string_view line) {
+            if (line.starts_with("comment"))
+                parse_hdr_comment(line, layout);
+        });
+        return complete_header && layout.hdr_mode != FastPropertyLayout::HDR_NONE;
     }
 
     std::expected<lfs::core::PointCloud, std::string> load_ply_point_cloud(const std::filesystem::path& filepath,

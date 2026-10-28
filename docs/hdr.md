@@ -55,8 +55,18 @@ median relative radiance error well under 1 % over the sphere, σ = 0.3 a few pe
 model the round trip costs a fraction of a dB of μ-law PSNR (numbers in PLAN.md).
 
 Reading a `linear` file back applies the inverse projection (`ln(max(colour(w), 1e-6))` on the same sphere), so
-export → import is not bit-exact above degree 0. For a lossless project round trip use the `.licht` project
-(it stores the raw tensors) or `--hdr-export log`.
+export → import is not bit-exact above degree 0. For a lossless round trip use the `.licht` project (it stores
+the raw log tensors AND the HDR state — a training project's checkpoint chapter carries it in its parameter
+JSON (`hdr`, `hdr_scale`, `hdr_color_max`; `apply_checkpoint_hdr_state`), a scene splat chapter in a 12-byte
+trailer of the raw splat payload (flag `0x1` in the header, `src/io/project/splat_chapter.cpp`); older projects
+read unchanged) or `--hdr-export log`.
+
+Reading back floors each direction at **1 % of the splat's own DC radiance** (never below 1e-6) before the log:
+a foreign `linear` file whose expansion goes negative over part of the sphere would otherwise drag the log fit
+down to ln 1e-6 = −13.8 and ruin the bright side (measured on a degree-1 fixture with lobes of 1.3 × DC: the
+positive side's median error fell from 97 % to 20 %; a log basis still cannot hold a clipped hemisphere).
+Files LichtFeld writes are positive everywhere but for a vanishing fraction of samples, so the floor never
+acts on them.
 
 ## Baked LDR — opens in any viewer
 
@@ -74,8 +84,16 @@ unless `baked` is asked for, in which case the same bake runs first (`lfs::io::h
 ## In the app
 
 - `SplatData::hdr()` carries `{log_sh, scale, color_max}`; `is_hdr()` is what every consumer tests. The
-  rasterizer takes `color_activation_for(model)`; the PLY reader sets the state from the header; a merge of
-  HDR models keeps it; `extract_by_mask` / crop keep it.
+  rasterizer takes `color_activation_for(model)`; the PLY reader sets the state from the header; the `.licht`
+  project stores it; a merge of HDR models keeps it (a mixed HDR + LDR merge is refused: the two readings of the
+  SH cannot share one file); `extract_by_mask` / crop keep it; the simplifier and the Bhattacharyya / octree LOD
+  builders keep it (their merged coefficients average LOG radiance, i.e. a geometric mean of radiance).
+- The out-of-core PLY → RAD converter (`--tiles`, `--lod-builder octree`, very large files) parses colour only
+  and never sees the header, so `convert` probes `is_hdr_ply` first: an HDR PLY is refused there unless
+  `--hdr-export baked` (then it is baked in memory and written through `save_rad`); `--tiles` of an HDR PLY is
+  refused outright.
+- The sRGB transfer of the bake is `lfsSrgbEncode` in `display_color.inc`, the one definition the viewer's HDR
+  path (M4) must use as well.
 - Loading a `linear` PLY as a training start (`--init`, or `LichtFeld-Studio eval <ply> -d <dataset> --hdr`) does
   not re-seed sh0 (the model already holds log radiance), and when `--hdr` is given with no `hdr_scale` /
   `hdr_color_max` the file's values are used. Without `--hdr` the trainer refuses an HDR model and says why.

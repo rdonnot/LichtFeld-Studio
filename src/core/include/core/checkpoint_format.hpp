@@ -90,6 +90,11 @@ namespace lfs::core {
         std::istream& stream,
         uint64_t file_size);
 
+    // HDR (PLAN.md M5): set the model's HdrState from the checkpoint's parameters (hdr / hdr_scale /
+    // hdr_color_max); a no-op for LDR parameters. Call it after load_checkpoint_splat_data with the
+    // parameters read by load_checkpoint_params.
+    LFS_CORE_API void apply_checkpoint_hdr_state(const param::TrainingParameters& params, SplatData& splat);
+
     LFS_CORE_API param::TrainingParameters parse_checkpoint_params_json(
         std::string_view json_text,
         param::TrainingParameters base_params = {});

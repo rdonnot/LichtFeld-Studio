@@ -5195,16 +5195,18 @@ namespace lfs::core {
                                        : std::min({sh_degree_limit, model.get_active_sh_degree(), model.get_max_sh_degree()});
         };
         // HDR (M5): a merge of HDR models keeps the first one's state (log radiance, s, cap) so the exporters
-        // still know how to read the SH; a mixed LDR/HDR merge cannot be expressed and is exported as LDR.
-        const auto carry_hdr = [&splats](std::unique_ptr<lfs::core::SplatData> result) {
-            if (!result)
-                return result;
-            const bool any_hdr = std::any_of(splats.begin(), splats.end(), [](const auto& e) { return e.first->is_hdr(); });
-            const bool all_hdr = std::all_of(splats.begin(), splats.end(), [](const auto& e) { return e.first->is_hdr(); });
-            if (all_hdr)
+        // still know how to read the SH. A mixed LDR/HDR merge has no single reading of the SH and is refused
+        // (nullptr, like the other impossible merges) rather than written with half its colours wrong.
+        const bool any_hdr = std::any_of(splats.begin(), splats.end(), [](const auto& e) { return e.first->is_hdr(); });
+        const bool all_hdr = std::all_of(splats.begin(), splats.end(), [](const auto& e) { return e.first->is_hdr(); });
+        if (any_hdr && !all_hdr) {
+            LOG_ERROR("Cannot merge HDR (log radiance) and LDR models in one export: bake the HDR model to LDR first "
+                      "(export it as a baked PLY) or export the models separately");
+            return nullptr;
+        }
+        const auto carry_hdr = [&splats, all_hdr](std::unique_ptr<lfs::core::SplatData> result) {
+            if (result && all_hdr)
                 result->set_hdr(splats.front().first->hdr());
-            else if (any_hdr)
-                LOG_WARN("Merging HDR (log radiance) and LDR models: the result is treated as LDR, the HDR parts will look wrong");
             return result;
         };
         const auto limit_degree = [sh_degree_limit, &storage_degree, &carry_hdr](std::unique_ptr<lfs::core::SplatData> result) {

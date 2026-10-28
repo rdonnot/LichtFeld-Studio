@@ -334,6 +334,8 @@ namespace lfs::python {
             const auto tone = core::hdr::parse_tone_operator(tonemap);
             if (!tone)
                 throw_invalid_io_argument("tonemap must be one of: " + std::string(core::hdr::kToneOperatorNames));
+            if (!std::isfinite(exposure_ev) || exposure_ev < -30.0f || exposure_ev > 30.0f)
+                throw_invalid_io_argument("exposure_ev must be a finite EV in [-30, 30]");
             options.mode = *mode;
             options.exposure_ev = exposure_ev;
             options.tone = *tone;

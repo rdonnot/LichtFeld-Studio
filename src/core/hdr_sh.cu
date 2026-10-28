@@ -16,6 +16,7 @@
 #define LFS_COLOR_VEC3 glm::vec3
 #define LFS_COLOR_UINT unsigned int
 #define LFS_COLOR_MIX glm::mix
+using glm::clamp; // the .inc calls clamp() unqualified; CUDA has no scalar clamp of its own
 #include "display_color.inc"
 #undef LFS_COLOR_INLINE
 #undef LFS_COLOR_VEC3
@@ -31,14 +32,10 @@ namespace lfs::core::hdr::cuda {
             return b < log_color_max ? expf(b) : color_max;
         }
 
-        __device__ __forceinline__ float srgb_oetf(float x) {
-            x = fminf(fmaxf(x, 0.0f), 1.0f);
-            return x <= 0.0031308f ? 12.92f * x : 1.055f * powf(x, 1.0f / 2.4f) - 0.055f;
-        }
-
         __global__ void per_direction_kernel(float* __restrict__ values, const std::size_t n_splats,
                                              const std::size_t directions, const int mode, const float color_max,
-                                             const float log_color_max, const float exposure, const unsigned int tone) {
+                                             const float log_color_max, const float exposure, const unsigned int tone,
+                                             const float* __restrict__ dc, const std::size_t dc_stride) {
             const std::size_t idx = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
             const std::size_t total = n_splats * directions;
             if (idx >= total)
@@ -50,9 +47,16 @@ namespace lfs::core::hdr::cuda {
             float* const b = values + (splat * 3 + 2) * directions + d;
 
             if (mode == 1) {
-                *r = logf(fmaxf(*r, 1e-6f));
-                *g = logf(fmaxf(*g, 1e-6f));
-                *b = logf(fmaxf(*b, 1e-6f));
+                float fr = 1e-6f, fg = 1e-6f, fb = 1e-6f;
+                if (dc != nullptr) {
+                    const float* d = dc + splat * 3 * dc_stride;
+                    fr = fmaxf(fr, 1e-2f * d[0]);
+                    fg = fmaxf(fg, 1e-2f * d[dc_stride]);
+                    fb = fmaxf(fb, 1e-2f * d[2 * dc_stride]);
+                }
+                *r = logf(fmaxf(*r, fr));
+                *g = logf(fmaxf(*g, fg));
+                *b = logf(fmaxf(*b, fb));
                 return;
             }
             glm::vec3 c = mode == 3 ? glm::vec3(*r, *g, *b)
@@ -63,7 +67,7 @@ namespace lfs::core::hdr::cuda {
                 // Mode 0 of lfsDisplayTone returns the colour untouched (no exposure); a bake always
                 // exposes, so "none" is "linear" here.
                 c = lfsDisplayTone(c, tone == 0u ? 1u : tone, exposure);
-                c = glm::vec3(srgb_oetf(c.x), srgb_oetf(c.y), srgb_oetf(c.z));
+                c = lfsSrgbEncode(c); // display_color.inc: the same OETF as the viewer
             }
             *r = c.x;
             *g = c.y;
@@ -73,7 +77,8 @@ namespace lfs::core::hdr::cuda {
     } // namespace
 
     void apply_per_direction(float* values, const std::size_t n_splats, const std::size_t directions, const int mode,
-                             const float color_max, const float exposure, const int tone, cudaStream_t stream) {
+                             const float color_max, const float exposure, const int tone, cudaStream_t stream,
+                             const float* dc, const std::size_t dc_stride) {
         const std::size_t total = n_splats * directions;
         if (total == 0)
             return;
@@ -82,7 +87,7 @@ namespace lfs::core::hdr::cuda {
         const unsigned int blocks = static_cast<unsigned int>((total + kBlock - 1) / kBlock);
         per_direction_kernel<<<blocks, kBlock, 0, stream>>>(values, n_splats, directions, mode, color_max,
                                                             log_color_max, exposure,
-                                                            static_cast<unsigned int>(tone < 0 ? 0 : tone));
+                                                            static_cast<unsigned int>(tone < 0 ? 0 : tone), dc, dc_stride);
         LFS_CUDA_CHECK(cudaGetLastError());
     }
 

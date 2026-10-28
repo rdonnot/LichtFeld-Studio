@@ -1098,6 +1098,8 @@ namespace lfs::core {
             if (progress && !progress(1.0f, "LOD tree complete")) {
                 return std::unexpected("build_octree_lod: cancelled by user");
             }
+            // HDR: interior nodes average LOG radiance (geometric mean); the state travels with the tree.
+            result->set_hdr(input.hdr());
             return result;
         } catch (const std::exception& e) {
             LOG_ERROR("build_octree_lod failed: {}", e.what());

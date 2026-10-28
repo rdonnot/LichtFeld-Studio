@@ -292,11 +292,22 @@ namespace lfs::app {
                 }
 
                 std::optional<core::CheckpointSplatDataLoadResult> loaded;
+                std::optional<core::CheckpointParametersLoadResult> loaded_params;
                 auto visited = checkpoint->visit_stream(
                     [&](std::istream& stream, const std::uint64_t bytes) -> lfs::Result<void> {
                         loaded = core::load_checkpoint_splat_data(stream, bytes, {});
                         return {};
                     });
+                if (visited) {
+                    // HDR state (docs/hdr.md): the checkpoint's parameters say how the SH are read.
+                    (void)checkpoint->visit_stream(
+                        [&](std::istream& stream, const std::uint64_t bytes) -> lfs::Result<void> {
+                            loaded_params = core::load_checkpoint_params(stream, bytes);
+                            return {};
+                        });
+                    if (loaded && *loaded && loaded_params && *loaded_params)
+                        core::apply_checkpoint_hdr_state(**loaded_params, **loaded);
+                }
                 if (!visited) {
                     LOG_ERROR("Failed to stream project checkpoint: {}",
                               lfs::format_for_developer(visited.error()));
@@ -458,7 +469,24 @@ namespace lfs::app {
             if (params.format == param::OutputFormat::RAD && isPlyExtension(input) &&
                 (tiled || params.lod_builder != param::LodBuilder::BHATT ||
                  shouldStreamLodConvert(input))) {
-                return streamLodConvertFile(input, output, params);
+                // The streaming parser reads f_dc as colour and ignores the header: an HDR PLY (docs/hdr.md)
+                // must go through the in-memory path, where the writers' gate bakes or refuses it.
+                if (lfs::io::is_hdr_ply(input)) {
+                    if (params.hdr_export.mode != core::hdr::ExportMode::BakedLdr) {
+                        const auto message = core::hdr::refusal_message("RAD");
+                        LOG_ERROR("{}", message);
+                        std::println(stderr, "  Error: {}", message);
+                        return false;
+                    }
+                    if (tiled) {
+                        LOG_ERROR("--tiles is not available for an HDR PLY: bake it to an LDR PLY first");
+                        std::println(stderr, "  Error: --tiles is not available for an HDR PLY (bake it to an LDR PLY first)");
+                        return false;
+                    }
+                    std::println("  HDR PLY: baking in memory before the RAD build (the streaming converter reads colour only)");
+                } else {
+                    return streamLodConvertFile(input, output, params);
+                }
             }
 
             std::println("Converting: {} -> {}", path_to_utf8(input), path_to_utf8(output));

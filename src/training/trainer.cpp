@@ -3058,10 +3058,20 @@ namespace lfs::training {
                     if (params_.optimization.hdr_scale <= 0.0f && file_state.scale > 0.0f) {
                         params_.optimization.hdr_scale = file_state.scale;
                         LOG_INFO("HDR: radiance scale s = {} taken from the initial model's hdr_scale", file_state.scale);
+                    } else if (file_state.scale > 0.0f &&
+                               std::abs(params_.optimization.hdr_scale - file_state.scale) > 1e-3f * file_state.scale) {
+                        LOG_WARN("HDR: --hdr-scale {} differs from the initial model's hdr_scale {}; the configuration wins "
+                                 "(the mu-law loss and the display exposure move with it)",
+                                 params_.optimization.hdr_scale, file_state.scale);
                     }
                     if (params_.optimization.hdr_color_max <= 0.0f && file_state.color_max > 0.0f) {
                         params_.optimization.hdr_color_max = file_state.color_max;
                         LOG_INFO("HDR: colour cap = {} taken from the initial model's hdr_color_max", file_state.color_max);
+                    } else if (file_state.color_max > 0.0f &&
+                               std::abs(params_.optimization.hdr_color_max - file_state.color_max) > 1e-3f * file_state.color_max) {
+                        LOG_WARN("HDR: --hdr-color-max {} differs from the initial model's hdr_color_max {}; the configuration "
+                                 "wins (splats at the old cap are re-capped)",
+                                 params_.optimization.hdr_color_max, file_state.color_max);
                     }
                 }
             }

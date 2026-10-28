@@ -141,6 +141,18 @@ namespace lfs::core {
         }
     }
 
+    // The checkpoint's parameter JSON is the one place a training project records how its SH are read
+    // (hdr / hdr_scale / hdr_color_max). Callers that already parsed it hand it here so a model loaded from a
+    // CKPT chapter for export or viewing carries the state (PLAN.md M5 review B1). The splat loaders never seek
+    // the stream themselves: on the bounded CKPT window a seek past the model breaks the resume that follows.
+    void apply_checkpoint_hdr_state(const param::TrainingParameters& params, SplatData& splat) {
+        if (!params.optimization.hdr)
+            return;
+        splat.set_hdr({true, params.optimization.hdr_scale, params.optimization.hdr_color_max});
+        LOG_DEBUG("Checkpoint model is HDR (s = {}, cap = {})", params.optimization.hdr_scale,
+                  params.optimization.hdr_color_max);
+    }
+
     std::expected<SplatData, std::string> load_checkpoint_splat_data(
         const std::filesystem::path& path,
         SplatTensorAllocator tensor_allocator) {

@@ -4,6 +4,7 @@
 
 #include "py_splat_data.hpp"
 #include "core/hdr_sh.hpp"
+#include <cmath>
 #include <nanobind/stl/optional.h>
 #include <stdexcept>
 #include <string_view>
@@ -232,6 +233,8 @@ namespace lfs::python {
         const auto tone = core::hdr::parse_tone_operator(tonemap);
         if (!tone)
             throw std::invalid_argument("tonemap must be one of: " + std::string(core::hdr::kToneOperatorNames));
+        if (!std::isfinite(exposure_ev) || exposure_ev < -30.0f || exposure_ev > 30.0f)
+            throw std::invalid_argument("exposure_ev must be a finite EV in [-30, 30]");
         return PySplatData(std::make_shared<core::SplatData>(core::hdr::bake_hdr_to_ldr(*data_, exposure_ev, *tone)));
     }
 } // namespace lfs::python

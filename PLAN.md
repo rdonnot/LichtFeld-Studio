@@ -288,8 +288,9 @@ Alternative input path that skips merging (avoids ghosting):
 The PLY keeps the STANDARD convention `colour(w) = 0.5 + SH_C0·f_dc + Σ Yᵢ(w)·f_rest_i`, in LINEAR radiance,
 unbounded above 1; the header says so: `comment lichtfeld_hdr linear`, `comment hdr_scale <s>`, `comment
 hdr_color_max <cap>`, `comment hdr_display_exposure <1/s>`. Log encoding stays internal; `comment lichtfeld_hdr log`
-exists as the lossless PLY twin (the `.licht` project already keeps the raw tensors, so it is NOT needed for a project
-round trip — it is kept because it is the test oracle and the only exact PLY of a log model). A PLY without the
+exists as the lossless PLY twin (the `.licht` project keeps the raw log tensors — and, since the review fix below,
+the HDR state — so `log` is NOT needed for a project round trip; it is kept because it is the test oracle and the
+only exact PLY of a log model). A PLY without the
 comment is an LDR PLY and behaves exactly as before (`test_ldr_ply_untouched`: converted bit for bit). The full
 reader contract is `docs/hdr.md`.
 
@@ -381,6 +382,43 @@ reader contract is `docs/hdr.md`.
   rule) — refused-unless-baked for now, same as the quantising formats.
 - M4 should read `SplatData::hdr()` in the viewer SH shader and show the `hdr_display_exposure` as the default
   exposure; a `linear` PLY dropped on the viewer today is converted to log at load and renders through M4's path.
+
+**hdr-architect review fixes (same day, `hdr: M5 review fixes`).**
+- *B1 — HdrState was not in the `.licht` project*: `splat_chapter.cpp` wrote active / max / scene_scale only and
+  `splat_from_cpu_tensors` never called `set_hdr`, so a reopened HDR project exported log values as plain LDR
+  (training resumes only survived through the trainer's own `set_hdr`). Two chapters, two fixes. (a) Scene splat
+  chapters: the raw splat payload header's spare `u16 @10` carries flag `0x1` and a 12-byte trailer (u32 log_sh,
+  f32 scale, f32 color_max) follows the frozen-range table; `manifest_bytes` covers it; the reader validates it
+  and `set_hdr`s. Flag 0 files read unchanged; an older build refuses a flagged file explicitly ("expected
+  LFSPLT2 version 2") rather than misreading it. (b) A TRAINING project stores its model as a CKPT chapter
+  (`checkpoint_format.cpp`), which the review did not name: there the parameter JSON already holds `hdr` /
+  `hdr_scale` / `hdr_color_max`, so `apply_checkpoint_hdr_state(params, splat)` sets the state at the three
+  places that load a display model from a CKPT (project open, project export, `convert project.licht`). A first
+  version seeked to the JSON from inside `load_checkpoint_splat_data`; on the bounded CKPT window that broke the
+  resume that follows (`ldr_reeval` scored 27.47 then 28.62 dB with missing eval PNGs — a different split each
+  run), so the loader no longer touches the stream position and the callers, which already parse the params,
+  apply it. Test `test_project_keeps_hdr_state`: 10 iterations from a log PLY on `smoke_hdr` → `convert
+  project.licht out.ply` → `lichtfeld_hdr linear` with the file's s and cap, and SPZ from the project still
+  refuses unless baked.
+- *B2 — the streaming PLY → RAD converter bypassed the gate* (`convertFile` → `convert_ply_to_rad_lod`, whose
+  parser ignores comments): `convertFile` probes `lfs::io::is_hdr_ply` (header only) before that branch; an HDR
+  PLY is refused with the RAD refusal message unless `--hdr-export baked`, in which case it takes the in-memory
+  path (bake, then `save_rad`); `--tiles` of an HDR PLY is refused. Test `test_streaming_rad_refuses_hdr_unless_baked`.
+- Mixed HDR + LDR merge returns nullptr with an error (no silent LDR); the simplifier and the Bhattacharyya /
+  octree LOD builders carry the state (their merges average log radiance — a geometric mean — noted in the code);
+  the bake's OETF is `lfsSrgbEncode` in `display_color.inc` (the CUDA twin `using glm::clamp`s it), ONE definition
+  for M4 and M5; the trainer warns with both values when the CLI's s / cap differ from the file's; Python
+  `exposure_ev` is range-checked like the CLI; the `lichtfeld_hdr` value is case-insensitive; tests added for
+  degrees 1 and 2 (σ 0.1 lobes: p99 0.49 % / 1.1 %) and for a foreign `linear` PLY with negative lobes
+  (upper-case header, no cap). That last one changed the reader: the log of a linear expansion is now floored at
+  1 % of the splat's DC radiance (per channel, never below 1e-6) instead of an absolute 1e-6 — a hemisphere
+  clipped to ln 1e-6 = −13.8 dominated the degree-1 fit (positive-side median error 97 %, p90 4000 %); with the
+  DC-relative floor 20 % / 70 %, and the σ-0.3 degree-3 `log→linear→log` max fell from 563 % to 68 %. A log
+  basis still cannot hold a clipped hemisphere; the test pins "finite, bounded, far from the old failure". The
+  real model is unaffected (5e-7 of its samples are below the floor): linear PLY re-render 74.1 dB vs the original
+  renders (was 73.5 with the absolute floor), PSNR vs GT 36.507137. Include order
+  nits taken; `display_color.inc` stays where it is (moving it touches the Vulkan build and the compose shader's
+  relative include — owed to M4/M6 with the viewer work).
 
 ---
 

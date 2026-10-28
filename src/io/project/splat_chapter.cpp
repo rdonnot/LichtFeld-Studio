@@ -14,6 +14,7 @@
 #include "core/tensor/internal/cuda_stream_context.hpp"
 #include "core/tensor/internal/memory_pool.hpp"
 
+#include <cmath>
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -77,11 +78,17 @@ namespace lfs::io::project {
             std::uint64_t length = 0;
         };
 
+        // Header flags (u16 at byte 8 + 2). RAW_FLAG_HDR: a 12-byte HDR trailer (u32 log_sh, f32 scale,
+        // f32 color_max) follows the frozen-range table (PLAN.md M5). Files without it read as before.
+        constexpr std::uint16_t RAW_FLAG_HDR = 0x1;
+        constexpr std::size_t RAW_HDR_TRAILER_BYTES = 12;
+
         struct RawSplatHeader {
             int active = 0;
             int maximum = 0;
             float scene_scale = 0.0f;
             std::uint32_t count = 0;
+            std::uint16_t flags = 0;
             std::uint64_t manifest_bytes = 0;
         };
 
@@ -89,6 +96,7 @@ namespace lfs::io::project {
             int active = 0;
             int maximum = 0;
             float scene_scale = 0.0f;
+            lfs::core::SplatData::HdrState hdr{};
             std::uint64_t manifest_bytes = 0;
             std::vector<RawTensor> descriptors;
             std::vector<lfs::core::SplatData::FrozenRange> ranges;
@@ -113,12 +121,13 @@ namespace lfs::io::project {
         parse_raw_splat_header(const std::span<const std::byte> bytes) {
             if (bytes.size() < RAW_HEADER_BYTES ||
                 !std::equal(RAW_MAGIC.begin(), RAW_MAGIC.end(), bytes.begin()) ||
-                get_u16(bytes, 8) != 2 || get_u16(bytes, 10) != 0) {
+                get_u16(bytes, 8) != 2 || (get_u16(bytes, 10) & ~RAW_FLAG_HDR) != 0) {
                 return splat_error(lfs::ErrorCode::DataLoss,
                                    "The raw splat payload header is invalid.",
                                    "expected LFSPLT2 version 2");
             }
             RawSplatHeader header;
+            header.flags = get_u16(bytes, 10);
             header.active = static_cast<int>(get_u32(bytes, 12));
             header.maximum = static_cast<int>(get_u32(bytes, 16));
             const auto scene_bits = get_u32(bytes, 20);
@@ -136,7 +145,7 @@ namespace lfs::io::project {
                 header.manifest_bytes < RAW_HEADER_BYTES +
                                             static_cast<std::uint64_t>(header.count) *
                                                 RAW_DESCRIPTOR_BYTES +
-                                            8 ||
+                                            8 + ((header.flags & RAW_FLAG_HDR) ? RAW_HDR_TRAILER_BYTES : 0) ||
                 prefix_size < header.manifest_bytes) {
                 return lfs::Result<void>::failure(splat_error(
                     lfs::ErrorCode::DataLoss,
@@ -188,7 +197,8 @@ namespace lfs::io::project {
             }
             const auto frozen_count = get_u64(
                 prefix, RAW_HEADER_BYTES + static_cast<std::size_t>(count) * RAW_DESCRIPTOR_BYTES);
-            const auto ranges_end = parsed.manifest_bytes;
+            const bool has_hdr = (header->flags & RAW_FLAG_HDR) != 0;
+            const auto ranges_end = parsed.manifest_bytes - (has_hdr ? RAW_HDR_TRAILER_BYTES : 0);
             if (frozen_count > 1'000'000 ||
                 frozen_count > (ranges_end - (RAW_HEADER_BYTES + static_cast<std::size_t>(count) * RAW_DESCRIPTOR_BYTES + 8)) / 16)
                 return splat_error(lfs::ErrorCode::DataLoss, "The raw splat payload manifest is invalid.", "frozen-range table overflow");
@@ -197,6 +207,18 @@ namespace lfs::io::project {
             for (std::uint64_t i = 0; i < frozen_count; ++i, range_at += 16)
                 parsed.ranges.push_back({static_cast<std::size_t>(get_u64(prefix, range_at)),
                                          static_cast<std::size_t>(get_u64(prefix, range_at + 8))});
+            if (has_hdr) {
+                if (range_at + RAW_HDR_TRAILER_BYTES > parsed.manifest_bytes)
+                    return splat_error(lfs::ErrorCode::DataLoss, "The raw splat payload manifest is invalid.", "HDR trailer out of bounds");
+                const auto log_bits = get_u32(prefix, range_at);
+                const auto scale_bits = get_u32(prefix, range_at + 4);
+                const auto cap_bits = get_u32(prefix, range_at + 8);
+                parsed.hdr.log_sh = log_bits != 0;
+                std::memcpy(&parsed.hdr.scale, &scale_bits, sizeof(float));
+                std::memcpy(&parsed.hdr.color_max, &cap_bits, sizeof(float));
+                if (!std::isfinite(parsed.hdr.scale) || !std::isfinite(parsed.hdr.color_max))
+                    return splat_error(lfs::ErrorCode::DataLoss, "The raw splat payload manifest is invalid.", "HDR trailer is not finite");
+            }
             const auto data_start = parsed.manifest_bytes;
             std::uint32_t present = 0;
             std::uint64_t end = data_start;
@@ -226,13 +248,18 @@ namespace lfs::io::project {
         splat_from_cpu_tensors(RawSplatManifest& parsed,
                                std::vector<lfs::core::Tensor> tensors,
                                lfs::core::SplatTensorAllocator allocator) {
-            return lfs::core::SplatData::from_raw_tensors(
+            auto splat = lfs::core::SplatData::from_raw_tensors(
                 parsed.active, parsed.maximum, parsed.scene_scale,
                 std::move(tensors[0]), std::move(tensors[1]),
                 std::move(tensors[2]), std::move(tensors[3]),
                 std::move(tensors[4]), std::move(tensors[5]),
                 std::move(tensors[6]), std::move(tensors[7]),
                 std::move(parsed.ranges), std::move(allocator));
+            // The model carries how its SH are read (HDR log radiance, s, cap): the project keeps it so a
+            // reopened HDR model still exports with its header instead of as plain LDR (PLAN.md M5).
+            if (splat && *splat && parsed.hdr.log_sh)
+                (*splat)->set_hdr(parsed.hdr);
+            return splat;
         }
 
         lfs::Result<std::unique_ptr<lfs::core::SplatData>> hydrate_raw(
@@ -659,7 +686,9 @@ namespace lfs::io::project {
                 source.push_back(describe(7, model._densification_info.contiguous()));
             const auto source_ready = std::chrono::steady_clock::now();
             const auto descriptor_bytes = RAW_DESCRIPTOR_BYTES * source.size();
-            const auto range_bytes = 8ull + 16ull * model.frozen_ranges().size();
+            const bool write_hdr = model.is_hdr();
+            const auto range_bytes = 8ull + 16ull * model.frozen_ranges().size() +
+                                     (write_hdr ? RAW_HDR_TRAILER_BYTES : 0);
             const auto data_start = RAW_HEADER_BYTES + descriptor_bytes + range_bytes;
             std::uint64_t data_bytes = 0;
             for (const auto& item : source)
@@ -669,7 +698,7 @@ namespace lfs::io::project {
             auto bytes = std::span<std::byte>(result);
             std::copy(RAW_MAGIC.begin(), RAW_MAGIC.end(), bytes.begin());
             put_u16(bytes, 8, 2);
-            put_u16(bytes, 10, 0);
+            put_u16(bytes, 10, write_hdr ? RAW_FLAG_HDR : 0);
             put_u32(bytes, 12, static_cast<std::uint32_t>(model.get_active_sh_degree()));
             put_u32(bytes, 16, static_cast<std::uint32_t>(model.get_max_sh_degree()));
             std::uint32_t scene_bits = 0;
@@ -683,6 +712,16 @@ namespace lfs::io::project {
                 const auto at = RAW_HEADER_BYTES + descriptor_bytes + 8 + i * 16;
                 put_u64(bytes, at, model.frozen_ranges()[i].start);
                 put_u64(bytes, at + 8, model.frozen_ranges()[i].count);
+            }
+            if (write_hdr) {
+                const auto at = RAW_HEADER_BYTES + descriptor_bytes + 8 + model.frozen_ranges().size() * 16;
+                const auto& hdr = model.hdr();
+                std::uint32_t scale_bits = 0, cap_bits = 0;
+                std::memcpy(&scale_bits, &hdr.scale, sizeof(float));
+                std::memcpy(&cap_bits, &hdr.color_max, sizeof(float));
+                put_u32(bytes, at, 1u);
+                put_u32(bytes, at + 4, scale_bits);
+                put_u32(bytes, at + 8, cap_bits);
             }
             auto data_offset = static_cast<std::uint64_t>(data_start);
             for (std::size_t i = 0; i < source.size(); ++i) {
