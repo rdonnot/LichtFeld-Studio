@@ -47,6 +47,7 @@
 #include "preprocessing/preprocess.hpp"
 #include "python/runner.hpp"
 #include "rendering/coordinate_conventions.hpp"
+#include "rendering/hdr_display.hpp"
 #include "sequencer/timeline.hpp"
 #include "training/rasterization/fast_rasterizer.hpp"
 #include "visualizer/gui/layout_state.hpp"
@@ -1379,10 +1380,16 @@ namespace lfs::app {
                     cfg.width, cfg.height,
                     frame);
 
-                auto render_output = training::fast_rasterize(camera, *model, background);
+                // HDR fork (M4): an HDR model renders as absolute radiance (color_activation_for) and is
+                // displayed at EV 0 (radiance / s, sRGB) for the 8-bit encoder; LDR models are unchanged.
+                auto render_output = training::fast_rasterize(camera, *model, background, false, {}, false, 1.0f,
+                                                              training::color_activation_for(*model));
                 auto image = render_output.image;
                 if (image.dtype() != core::DataType::Float32) {
                     image = image.to(core::DataType::Float32);
+                }
+                if (rendering::hdr_display_applies(*model)) {
+                    image = rendering::hdr_display_image(image, model->hdr());
                 }
                 if (image.device() != core::Device::CUDA) {
                     image = image.cuda();

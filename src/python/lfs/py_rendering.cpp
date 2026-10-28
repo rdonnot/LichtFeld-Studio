@@ -738,6 +738,13 @@ namespace lfs::python {
         add_int_enum(&Proxy::splat_render_profile, "splat_render_profile", "Splat rendering profile",
                      "Preserve the source scene rendering when importing from the gallery",
                      {{"Studio", "studio", 0}, {"Standard portal", "standard", 1}}, 0);
+        // HDR fork (M4): HDR models only (SplatData::is_hdr); LDR models ignore these.
+        add_bool(&Proxy::hdr_display, "hdr_display", "HDR display",
+                 "Show an HDR model's log-radiance SH as radiance through exposure, tone operator and sRGB (off: raw SH values, as an LDR model)", true);
+        add_float(&Proxy::hdr_exposure_ev, "hdr_exposure_ev", "Exposure (EV)",
+                  "HDR exposure in stops: 0 EV puts the scene's P99 white at 1.0 before the tone operator", 0.0, -12.0, 12.0);
+        add_bool(&Proxy::hdr_false_color, "hdr_false_color", "False colour (stops)",
+                 "HDR debug view: luminance in stops relative to the scene's white on a viridis ramp, magenta at the model's cap", false);
 
         // Background
         add_color3(&Proxy::background_color, "background_color", "Color", "Viewport background color", {0.0, 0.0, 0.0});

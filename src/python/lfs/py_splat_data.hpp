@@ -48,6 +48,10 @@ namespace lfs::python {
         int max_sh_degree() const { return data_->get_max_sh_degree(); }
         float scene_scale() const { return data_->get_scene_scale(); }
         size_t num_points() const { return data_->size(); }
+        // HDR fork (M4): how this model's SH are to be read (SplatData::HdrState).
+        bool is_hdr() const { return data_->is_hdr(); }
+        float hdr_scale() const { return data_->hdr().scale; }
+        float hdr_color_max() const { return data_->hdr().color_max; }
 
         // Soft deletion
         PyTensor deleted() const;

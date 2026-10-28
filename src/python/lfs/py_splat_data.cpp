@@ -178,6 +178,12 @@ namespace lfs::python {
                          "Current active SH degree")
             .def_prop_ro("max_sh_degree", &PySplatData::max_sh_degree,
                          "Maximum SH degree")
+            .def_prop_ro("is_hdr", &PySplatData::is_hdr,
+                         "HDR fork: True when the SH hold log radiance (trained with --hdr); the viewer then shows radiance * 2^EV / hdr_scale")
+            .def_prop_ro("hdr_scale", &PySplatData::hdr_scale,
+                         "HDR fork: the scene's P99 luminance s (0 when unknown); the natural display exposure is 1/s")
+            .def_prop_ro("hdr_color_max", &PySplatData::hdr_color_max,
+                         "HDR fork: the absolute radiance cap the kernels used (0 when unknown)")
             .def_prop_ro("scene_scale", &PySplatData::scene_scale,
                          "Scene scale factor")
             .def_prop_ro("num_points", &PySplatData::num_points,

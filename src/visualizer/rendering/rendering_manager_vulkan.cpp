@@ -2,6 +2,7 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
+#include "rendering/hdr_display.hpp"
 #include "core/camera.hpp"
 #include "core/cuda/memory_arena.hpp"
 #include "core/cuda/undistort/undistort.hpp"
@@ -4122,9 +4123,22 @@ namespace lfs::vis {
                     const void* sh0_key = sh0.is_valid() ? sh0.ptr<float>() : nullptr;
                     const std::size_t sh0_count =
                         sh0.is_valid() ? static_cast<std::size_t>(sh0.size(0)) : 0;
-                    if (sh0_key != point_cloud_colors_cache_key_ ||
-                        sh0_count != point_cloud_colors_cache_size_ ||
-                        !point_cloud_colors_cache_.is_valid()) {
+                    // HDR fork (M4): an HDR model's sh0 is log radiance; derive display colours through the
+                    // exposure (EV) instead of the LDR decode. Not cached: the EV changes between frames.
+                    const bool hdr_colors = frame_settings.hdr_display && lfs::rendering::hdr_display_applies(*model);
+                    if (hdr_colors) {
+                        try {
+                            point_cloud_colors_cache_ =
+                                lfs::rendering::hdr_point_colors(*model, frame_settings.hdr_exposure_ev);
+                        } catch (const std::exception& e) {
+                            LOG_ERROR("Point cloud color derivation failed: {}", e.what());
+                            return std::nullopt;
+                        }
+                        point_cloud_colors_cache_key_ = nullptr;
+                        point_cloud_colors_cache_size_ = 0;
+                    } else if (sh0_key != point_cloud_colors_cache_key_ ||
+                               sh0_count != point_cloud_colors_cache_size_ ||
+                               !point_cloud_colors_cache_.is_valid()) {
                         try {
                             point_cloud_colors_cache_ =
                                 (sh0.slice(1, 0, 1).squeeze(1) * SH_C0 + 0.5f).clamp(0.0f, 1.0f);
