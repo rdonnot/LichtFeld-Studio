@@ -836,9 +836,10 @@ namespace lfs::rendering {
             constexpr float SH_C0 = 0.28209479177387814f;
             Tensor colors;
             try {
-                // HDR fork (M4): log-radiance sh0 -> display colour at EV 0 (this request carries no EV).
-                colors = hdr_display_applies(splat_data)
-                             ? hdr_point_colors(splat_data)
+                // HDR fork (M4): log-radiance sh0 -> display colour at the request's EV, same switch as the
+                // Vulkan point path (hdr_display off = the raw decode).
+                colors = request.hdr_display && hdr_display_applies(splat_data)
+                             ? hdr_point_colors(splat_data, request.hdr_exposure_ev)
                              : (splat_data.sh0_raw().slice(1, 0, 1).squeeze(1) * SH_C0 + 0.5f).clamp(0.0f, 1.0f);
             } catch (const std::exception& e) {
                 return std::unexpected(std::format("Failed to derive point colors from SH data: {}", e.what()));

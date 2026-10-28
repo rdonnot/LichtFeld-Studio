@@ -4,10 +4,11 @@
 #pragma once
 
 // HDR fork (PLAN.md M4): the display chain for consumers that turn an HDR model's colour into 8-bit
-// pixels OUTSIDE the Vulkan splat renderer: point-cloud previews (colour from sh0) and the headless
-// video render (a fastgs image in absolute radiance). Same maths as display_color.inc's lfsDisplayHdr
-// with the "none" tone operator: radiance * 2^EV / s, clamped, sRGB OETF (approximated by 1/2.2 on
-// tensors). The Vulkan viewer does not use this header.
+// pixels OUTSIDE the Vulkan splat renderer: point-cloud previews (colour from sh0), the headless video
+// render (a fastgs image in absolute radiance) and the exporters (M5). Same maths as display_color.inc's
+// lfsDisplayHdr with the "none" tone operator: radiance * 2^EV / s, clamped, the EXACT piecewise sRGB OETF
+// (lfsSrgbOetfChannel, pinned by tests/test_hdr_display_chain.cpp). The Vulkan viewer does not use this
+// header; rendering/display_color.hpp exposes both sides.
 
 #include "core/splat_data.hpp"
 #include "core/tensor.hpp"
@@ -23,12 +24,21 @@ namespace lfs::rendering {
                std::isfinite(hdr.color_max) && hdr.color_max > 0.0f;
     }
 
-    // Absolute linear radiance (any shape) -> display RGB in [0, 1].
+    // The sRGB OETF (IEC 61966-2-1) on a tensor of linear values, clamped to [0, 1] first:
+    // c <= 0.0031308 ? 12.92 c : 1.055 c^(1/2.4) - 0.055. Element-wise identical to lfsSrgbOetfChannel.
+    inline lfs::core::Tensor srgb_oetf(const lfs::core::Tensor& linear) {
+        const auto c = linear.clamp(0.0f, 1.0f);
+        const auto low = c * 12.92f;
+        const auto high = c.pow(1.0f / 2.4f) * 1.055f - 0.055f;
+        return lfs::core::Tensor::where(c <= 0.0031308f, low, high);
+    }
+
+    // Absolute linear radiance (any shape) -> display RGB in [0, 1], sRGB-encoded.
     inline lfs::core::Tensor hdr_display_image(const lfs::core::Tensor& radiance,
                                                const lfs::core::SplatData::HdrState& hdr,
                                                const float exposure_ev = 0.0f) {
         const float gain = std::exp2(std::clamp(exposure_ev, -20.0f, 20.0f)) / hdr.scale;
-        return (radiance * gain).clamp(0.0f, 1.0f).pow(1.0f / 2.2f);
+        return srgb_oetf(radiance * gain);
     }
 
     // Per-splat display colour from the DC term alone: exp(min(0.5 + SH_C0 * sh0, ln cmax)) -> the chain above.

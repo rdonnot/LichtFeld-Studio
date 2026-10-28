@@ -606,7 +606,9 @@ namespace lfs::vis {
                  .node_visibility_mask = ctx.scene_state.node_visibility_mask},
             .filters = {},
             .overlay = {},
-            .transparent_background = environmentBackgroundUsesTransparentViewerCompositing(ctx.settings)};
+            .transparent_background = environmentBackgroundUsesTransparentViewerCompositing(ctx.settings),
+            .hdr_display = ctx.settings.hdr_display,
+            .hdr_exposure_ev = ctx.settings.hdr_exposure_ev};
 
         if (!ctx.training_active) {
             if (ctx.gaussian_selection_visible)

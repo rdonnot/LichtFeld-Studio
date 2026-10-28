@@ -9,10 +9,13 @@
  *        the false-colour ramp, against hand-computed values. CPU only.
  */
 
-#include "rendering/rasterizer/vulkan/src/display_color.h"
+#include "rendering/display_color.hpp"
+
+#include "core/tensor.hpp"
 
 #include <cmath>
 #include <gtest/gtest.h>
+#include <vector>
 
 namespace {
 
@@ -102,6 +105,25 @@ namespace {
         EXPECT_LT(lfsDisplayHdr(glm::vec3(1.0f), 2u, 1.0f).r, 1.0f);
     }
 
+    TEST(HdrDisplayChainTest, TensorOetfMatchesTheShaderOetf) {
+        // rendering/hdr_display.hpp srgb_oetf (tensors, used by the point-cloud previews, the headless video
+        // render and the exporters) must be the piecewise curve the viewer uses, not a 1/2.2 power: in the
+        // shadows the two differ by up to ~8/255.
+        std::vector<float> values;
+        for (float v = -0.05f; v <= 1.2f; v += 0.0025f)
+            values.push_back(v);
+        values.insert(values.end(), {0.0f, 0.0031308f, 0.0031309f, 0.04045f, 0.18f, 0.5f, 1.0f});
+        const auto linear = lfs::core::Tensor::from_vector(values, {values.size()}, lfs::core::Device::CPU);
+        const auto encoded = lfs::rendering::srgb_oetf(linear).cpu().contiguous();
+        const float* out = encoded.ptr<float>();
+        ASSERT_NE(out, nullptr);
+        for (std::size_t i = 0; i < values.size(); ++i) {
+            EXPECT_NEAR(out[i], lfs::rendering::lfsSrgbOetfChannel(values[i]), 2e-6f) << values[i];
+        }
+        // And the difference to the old approximation is real where it matters.
+        EXPECT_GT(std::abs(lfs::rendering::lfsSrgbOetfChannel(0.002f) - std::pow(0.002f, 1.0f / 2.2f)) * 255.0f, 4.0f);
+    }
+
     TEST(HdrDisplayChainTest, FalseColorRampIsStopsRelativeToWhite) {
         using lfs::rendering::lfsHdrFalseColor;
         const float ln_cap = std::log(1000.0f);
@@ -119,7 +141,9 @@ namespace {
         // Below -8 EV clamps to the dark end, above +8 EV to the bright end (below the cap).
         EXPECT_EQ(lfsHdrFalseColor(std::exp2(-11.0f), ln_cap), lo);
         EXPECT_EQ(lfsHdrFalseColor(std::exp2(9.0f), ln_cap), hi);
-        // At the cap: magenta.
+        // At the cap: magenta. The test is on LUMINANCE (as the compose pass computes it), so a single
+        // channel at the cap with the others dark is not flagged; the cap is a per-channel clamp in the
+        // shader, the flag a luminance warning — by design, not an oversight.
         EXPECT_EQ(lfsHdrFalseColor(1000.0f, ln_cap), glm::vec3(1.0f, 0.0f, 1.0f));
         // Monotonic green channel through the ramp's lower half (a sanity check on the segment lookup).
         float previous = -1.0f;

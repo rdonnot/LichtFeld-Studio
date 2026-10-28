@@ -934,6 +934,8 @@ namespace lfs::vis {
         lfs::core::Tensor point_cloud_colors_cache_;
         const void* point_cloud_colors_cache_key_ = nullptr;
         std::size_t point_cloud_colors_cache_size_ = 0;
+        bool point_cloud_colors_cache_hdr_ = false;    // HDR fork (M4): the cached colours went through the HDR chain
+        float point_cloud_colors_cache_ev_ = 0.0f;     // ... at this exposure
         // Submit serial of the last frame that drew the point cloud; its buffers
         // are released only after that frame has retired on the GPU.
         std::uint64_t point_cloud_last_frame_serial_ = 0;

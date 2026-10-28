@@ -1237,14 +1237,16 @@ void main(
     out_xy_vs[out_idx] = splat.xyz_vs.xy;
     out_depths[out_idx] = splat.xyz_vs.z - uniforms.depth_offset;
     out_inv_cov_vs[out_idx] = splat.inv_cov_vs_opac;
+    if (uniforms.splat_render_profile == 1u && (uniforms.hdr_flags & 1u) != 0u) {
+        // HDR: the per-splat colour is linear normalised radiance; display it (exposure, tone, sRGB OETF)
+        // BEFORE the portal compaction (which clamps at 4 and quantises: it must see display-referred
+        // colour, or a lamp 6 stops over white is clipped before the exposure can bring it back).
+        splat.rgb = lfsDisplayHdr(splat.rgb, uniforms.color_tonemapping, uniforms.color_exposure);
+    }
     if (uniforms.splat_render_profile == 1u && !spark_rad_opacity_path) {
         splat.rgb = lfsPortalCompactColor(splat.rgb);
     }
-    if (uniforms.splat_render_profile == 1u && (uniforms.hdr_flags & 1u) != 0u) {
-        // HDR: the per-splat colour is linear normalised radiance; display it (exposure, tone, sRGB OETF)
-        // before blending, as the standard-portal profile blends display-referred colour.
-        splat.rgb = lfsDisplayHdr(splat.rgb, uniforms.color_tonemapping, uniforms.color_exposure);
-    } else if (uniforms.splat_render_profile == 1u && uniforms.color_tonemapping != 0u) {
+    if (uniforms.splat_render_profile == 1u && (uniforms.hdr_flags & 1u) == 0u && uniforms.color_tonemapping != 0u) {
         splat.rgb = lfsDisplaySplat(splat.rgb, uniforms.color_tonemapping, uniforms.color_exposure);
     }
     write_t3_float3(splat.rgb, out_idx, out_rgb);

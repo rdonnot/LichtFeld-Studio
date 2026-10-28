@@ -23,8 +23,12 @@ from PIL import Image
 def read_exr(path: Path) -> np.ndarray:
     f = OpenEXR.File(str(path))
     ch = f.channels()
-    arr = np.asarray(ch[list(ch.keys())[0]].pixels, dtype=np.float64)
-    return arr[..., :3]
+    if "RGB" in ch or "RGBA" in ch:  # OpenEXR 3.3 groups interleaved channels
+        arr = np.asarray(ch["RGB" if "RGB" in ch else "RGBA"].pixels, dtype=np.float64)
+        return arr[..., :3]
+    if all(k in ch for k in ("R", "G", "B")):  # separate planes
+        return np.stack([np.asarray(ch[k].pixels, dtype=np.float64) for k in ("R", "G", "B")], axis=-1)
+    raise SystemExit(f"{path}: channels {list(ch.keys())} are not RGB")
 
 
 def read_ppm(path: Path) -> np.ndarray:

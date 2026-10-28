@@ -385,6 +385,30 @@ and its fov; `tools/eval/hdr_viewer_check.py` applies the same chain to the fast
 - The `build/tests` tree was not built in this worktree (35 min); the new gtest ran standalone against the tests
   tree's GTest. The other M4 tooling (`tools/eval/hdr_viewer_check.py`) runs in `tools/` with `uv`.
 
+**Review fixes applied (hdr-architect, 2026-10-28, on top of e2eeca509).**
+1. *One OETF.* `rendering/hdr_display.hpp` `srgb_oetf` is the exact piecewise sRGB curve in tensor ops
+   (`where(c ≤ 0.0031308, 12.92c, 1.055c^(1/2.4) − 0.055)`), no longer `pow(1/2.2)` (up to ~8/255 apart in the
+   shadows); pinned element-wise to `lfsSrgbOetfChannel` over a 500-value sweep in `test_hdr_display_chain.cpp`
+   (`TensorOetfMatchesTheShaderOetf`). New public header `rendering/display_color.hpp` forwards the per-sample
+   functions (`lfsDisplayHdr(radiance / s, mode, exp2(EV))`, `lfsSrgbOetf/Eotf`, `lfsHdrFalseColor`) and the tensor
+   ones (`srgb_oetf`, `hdr_display_image`, `hdr_point_colors`, `hdr_display_applies`) for the M5 exporter.
+2. *Standard-portal profile* (`vertex_shader.slang` ~1240): `lfsDisplayHdr` runs BEFORE `lfsPortalCompactColor`,
+   so the compaction's clamp at 4 sees display-referred colour; the LDR `lfsDisplaySplat` branch is unchanged.
+3. *Checkpoint re-tag* (`trainer.cpp` ~10125) guarded by `hdr_scale > 0 && hdr_color_max > 0` — `load_checkpoint`
+   does not write the saved parameters back, so `{true, 0, 0}` could have overwritten the project-open tag.
+4. *Point-cloud colours cached* on (sh0 ptr, count, hdr, EV) (`rendering_manager.hpp` +2 members,
+   `rendering_manager_vulkan.cpp` ~4120) instead of being recomputed every frame.
+5. *Video render background* (`application.cpp` ~1327): for an HDR model the display-referred background is
+   linearised and scaled by s before fastgs composites it in absolute radiance (it is black by default, so the
+   output did not change; the path is now right for any colour).
+6. *Software point-cloud path* (`raster_rendering_engine.cpp` ~840) honours `hdr_display` and the EV like the
+   Vulkan one: `PointCloudRenderRequest` carries `hdr_display / hdr_exposure_ev`, set at the three settings-aware
+   build sites (the async export previews keep the defaults: on, EV 0).
+   Nits: `hdr_viewer_check.py` reads separate R/G/B planes too; the false-colour cap test documents that it is on
+   luminance. Re-measured after the fixes: `ldr_reeval.py` identical (metrics + 16 PNGs, row `m4_reeval_reviewfix`),
+   pos_008 at EV −4/0/+4 vs fastgs 51.33 / 42.20 / 40.73 dB (unchanged to the hundredth), the chain gtest 6/6
+   standalone against the tests tree's GTest + `build/liblfs_core.so`.
+
 ---
 
 ## M5 — Export & interop

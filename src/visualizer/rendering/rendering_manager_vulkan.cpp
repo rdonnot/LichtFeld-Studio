@@ -2890,7 +2890,9 @@ namespace lfs::vis {
                          .node_visibility_mask = {}},
                     .filters = state.filters,
                     .overlay = state.overlay,
-                    .transparent_background = environmentBackgroundUsesTransparentViewerCompositing(frame_settings)};
+                    .transparent_background = environmentBackgroundUsesTransparentViewerCompositing(frame_settings),
+                    .hdr_display = frame_settings.hdr_display,
+                    .hdr_exposure_ev = frame_settings.hdr_exposure_ev};
                 auto auxiliary_engine = ensure_auxiliary_rendering_engine();
                 if (!auxiliary_engine) {
                     return std::unexpected(auxiliary_engine.error());
@@ -2942,7 +2944,9 @@ namespace lfs::vis {
                     .scene = scene,
                     .filters = state.filters,
                     .overlay = state.overlay,
-                    .transparent_background = environmentBackgroundUsesTransparentViewerCompositing(frame_settings)};
+                    .transparent_background = environmentBackgroundUsesTransparentViewerCompositing(frame_settings),
+                    .hdr_display = frame_settings.hdr_display,
+                    .hdr_exposure_ev = frame_settings.hdr_exposure_ev};
                 if (model_override && scene_manager &&
                     splitViewUsesPLYComparison(frame_settings.split_view_mode)) {
                     const auto& source_scene = scene_manager->getScene();
@@ -4124,30 +4128,26 @@ namespace lfs::vis {
                     const std::size_t sh0_count =
                         sh0.is_valid() ? static_cast<std::size_t>(sh0.size(0)) : 0;
                     // HDR fork (M4): an HDR model's sh0 is log radiance; derive display colours through the
-                    // exposure (EV) instead of the LDR decode. Not cached: the EV changes between frames.
+                    // exposure (EV) instead of the LDR decode. Cached like the LDR colours, plus the EV.
                     const bool hdr_colors = frame_settings.hdr_display && lfs::rendering::hdr_display_applies(*model);
-                    if (hdr_colors) {
+                    const float hdr_ev = hdr_colors ? frame_settings.hdr_exposure_ev : 0.0f;
+                    if (sh0_key != point_cloud_colors_cache_key_ ||
+                        sh0_count != point_cloud_colors_cache_size_ ||
+                        hdr_colors != point_cloud_colors_cache_hdr_ ||
+                        hdr_ev != point_cloud_colors_cache_ev_ ||
+                        !point_cloud_colors_cache_.is_valid()) {
                         try {
                             point_cloud_colors_cache_ =
-                                lfs::rendering::hdr_point_colors(*model, frame_settings.hdr_exposure_ev);
-                        } catch (const std::exception& e) {
-                            LOG_ERROR("Point cloud color derivation failed: {}", e.what());
-                            return std::nullopt;
-                        }
-                        point_cloud_colors_cache_key_ = nullptr;
-                        point_cloud_colors_cache_size_ = 0;
-                    } else if (sh0_key != point_cloud_colors_cache_key_ ||
-                               sh0_count != point_cloud_colors_cache_size_ ||
-                               !point_cloud_colors_cache_.is_valid()) {
-                        try {
-                            point_cloud_colors_cache_ =
-                                (sh0.slice(1, 0, 1).squeeze(1) * SH_C0 + 0.5f).clamp(0.0f, 1.0f);
+                                hdr_colors ? lfs::rendering::hdr_point_colors(*model, hdr_ev)
+                                           : (sh0.slice(1, 0, 1).squeeze(1) * SH_C0 + 0.5f).clamp(0.0f, 1.0f);
                         } catch (const std::exception& e) {
                             LOG_ERROR("Point cloud color derivation failed: {}", e.what());
                             return std::nullopt;
                         }
                         point_cloud_colors_cache_key_ = sh0_key;
                         point_cloud_colors_cache_size_ = sh0_count;
+                        point_cloud_colors_cache_hdr_ = hdr_colors;
+                        point_cloud_colors_cache_ev_ = hdr_ev;
                     }
                     splat_positions = model->get_means();
                     positions_ptr = &splat_positions;

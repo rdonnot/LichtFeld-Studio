@@ -279,6 +279,9 @@ namespace lfs::rendering {
         PointCloudFilterState filters;
         PointCloudOverlayState overlay;
         bool transparent_background = false;
+        // HDR fork (M4): point colours of an HDR model go through the display chain at this EV (false: raw).
+        bool hdr_display = true;
+        float hdr_exposure_ev = 0.0f;
     };
 
     struct FramePanelMetadata {
