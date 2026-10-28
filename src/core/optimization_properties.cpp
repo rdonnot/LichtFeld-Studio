@@ -1060,6 +1060,43 @@ namespace lfs::core::param {
             .ui_step(1000.0)
             .flags(PROP_ADVANCED)
             .all_strategies()
+            .bool_prop(&OptimizationParameters::hdr_brackets,
+                       "hdr_brackets", "HDR from brackets", d.hdr_brackets,
+                       "Train --hdr directly on the bracket JPEGs (the plugin's <out>/brackets): each frame is a "
+                       "training image at its position's pose, exposed by 2^(EXIF EV - exif_ev_ref), passed "
+                       "through the fixed Debevec LUT of --hdr-crf and compared with the JPEG in the LDR domain; "
+                       "saturated pixels are one-sided. Implies --hdr")
+            .flags(PROP_ADVANCED | PROP_NEEDS_RESTART)
+            .all_strategies()
+            .enum_prop(&OptimizationParameters::hdr_exposure,
+                       "hdr_exposure", "HDR bracket exposure", d.hdr_exposure,
+                       {{"Exif", HdrExposureMode::Exif, "training.options.hdr_exposure.exif", "exif"},
+                        {"Learn", HdrExposureMode::Learn, "training.options.hdr_exposure.learn", "learn"}},
+                       "Per-frame exposure in bracket mode: exif = frozen at the EXIF gain; learn = the EXIF gain "
+                       "times 2^delta with a learnable delta pinned to 0 by hdr_exposure_prior")
+            .flags(PROP_ADVANCED)
+            .all_strategies()
+            .float_prop(&OptimizationParameters::hdr_exposure_prior,
+                        "hdr_exposure_prior", "HDR exposure prior", d.hdr_exposure_prior, 0.0f, 1.0e6f,
+                        "Weight of mean(delta^2) added to the loss in bracket mode (learn); 0 = free")
+            .precision(3)
+            .ui_step(0.1)
+            .flags(PROP_ADVANCED)
+            .all_strategies()
+            .float_prop(&OptimizationParameters::hdr_exposure_lr,
+                        "hdr_exposure_lr", "HDR exposure LR", d.hdr_exposure_lr, 1.0e-6f, 1.0f,
+                        "Adam learning rate of the per-frame exposure deltas (bracket mode, learn)")
+            .precision(5)
+            .ui_step(0.001)
+            .flags(PROP_ADVANCED)
+            .all_strategies()
+            .float_prop(&OptimizationParameters::hdr_exposure_max_delta,
+                        "hdr_exposure_max_delta", "HDR exposure max delta", d.hdr_exposure_max_delta, 0.01f, 16.0f,
+                        "Largest |delta| a frame's exposure may move from its EXIF gain, in stops")
+            .precision(2)
+            .ui_step(0.5)
+            .flags(PROP_ADVANCED)
+            .all_strategies()
             .bool_prop(&OptimizationParameters::undistort,
                        "undistort", "Undistort", d.undistort,
                        "Remove lens distortion before training: each image and its mask, depth and "

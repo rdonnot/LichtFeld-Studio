@@ -190,7 +190,7 @@ namespace lfs::training {
             load_params.output_uint8 = exact_uint8;
             load_params.decode_16bit = !exact_uint8;
             load_params.decode_float = !exact_uint8;
-            if (params.optimization.hdr) {
+            if (params.optimization.hdr && !params.optimization.hdr_brackets) {
                 load_params.output_uint8 = false;
                 load_params.decode_16bit = true;
                 load_params.decode_float = true;
@@ -215,8 +215,9 @@ namespace lfs::training {
         config.decoder_pool_size = 1;
         config.io_threads = 1;
         config.cold_process_threads = 1;
-        config.use_16bit_color = params.dataset.loading_params.use_16bit_color || params.optimization.hdr;
-        config.hdr_linear = params.optimization.hdr;
+        const bool hdr_float_input = params.optimization.hdr && !params.optimization.hdr_brackets;
+        config.use_16bit_color = params.dataset.loading_params.use_16bit_color || hdr_float_input;
+        config.hdr_linear = hdr_float_input;
         return std::make_unique<lfs::io::PipelinedImageLoader>(config);
     }
 

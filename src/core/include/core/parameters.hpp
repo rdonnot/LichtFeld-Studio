@@ -44,6 +44,30 @@ namespace lfs::core {
             return std::nullopt;
         }
 
+        // HDR bracket training (PLAN.md M3): how a frame's exposure gain is set. exif = 2^(exif_ev - exif_ev_ref)
+        // from the JPEG's own tags, frozen; learn = the same gain times 2^delta with a learnable per-frame delta
+        // that a prior pins to 0 (the EXIF is the absolute anchor of the radiance units).
+        enum class HdrExposureMode { Exif,
+                                     Learn };
+
+        [[nodiscard]] inline constexpr std::optional<HdrExposureMode> hdr_exposure_mode_from_string(std::string_view value) noexcept {
+            if (value == "exif")
+                return HdrExposureMode::Exif;
+            if (value == "learn")
+                return HdrExposureMode::Learn;
+            return std::nullopt;
+        }
+
+        [[nodiscard]] inline constexpr std::string_view hdr_exposure_mode_name(const HdrExposureMode mode) noexcept {
+            switch (mode) {
+            case HdrExposureMode::Exif:
+                return "exif";
+            case HdrExposureMode::Learn:
+                return "learn";
+            }
+            return "learn";
+        }
+
         enum class EvalSpace {
             Distorted,
             Undistorted,
@@ -377,6 +401,17 @@ namespace lfs::core {
             float hdr_mu = 5000.f;       // mu-law constant: y = log1p(mu*x)/log1p(mu)
             float hdr_scale = 0.f;       // radiance normalisation s; 0 = P99 luminance of the training EXRs at load
             float hdr_color_max = 0.f;   // absolute radiance cap: c = exp(min(b, ln cap)); 0 = 1000 * s, resolved at load
+            // HDR from the bracket JPEGs (PLAN.md M3, docs/hdr-m3-design.md): every frame of a bracket is a training
+            // image with its position's pose; render v -> x = v * 2^(b_i + delta_i) (b_i = exif_ev_i - exif_ev_ref)
+            // -> the fixed Debevec LUT of hdr_crf -> fused L1 + D-SSIM against the JPEG in the LDR domain, saturated
+            // pixels one-sided. No mu-law in the loss; radiance units are the plugin's (g(128) = 0), so s and the cap
+            // keep their meaning.
+            bool hdr_brackets = false;
+            std::filesystem::path hdr_crf = {};                    // crf.json: log_irradiance[3][256] + exif_ev_ref
+            HdrExposureMode hdr_exposure = HdrExposureMode::Learn; // exif = delta frozen at 0
+            float hdr_exposure_prior = 1.f;                        // loss += prior * mean_i(delta_i^2)
+            float hdr_exposure_lr = 2e-3f;                         // Adam on delta, no warm-up
+            float hdr_exposure_max_delta = 3.f;                    // |delta| clamp, in stops
             bool undistort = false;
             float steps_scaler = 1.f;       // Scales training step counts; values <= 0 disable scaling
             float image_count_scaler = 1.f; // Share of steps_scaler applied by the GUI image-count auto-scale
@@ -501,6 +536,10 @@ namespace lfs::core {
             std::string images = "images";
             int resize_factor = -1;
             int test_every = 8;
+            // Hold out whole POSITIONS (PLAN.md M3 §1): an image's position is its name up to the last '_'
+            // (pos_000_f3 -> pos_000); every test_every-th position, with all its frames, is evaluation. Off: every
+            // test_every-th image. With one frame per position the two agree.
+            bool test_by_position = false;
             std::vector<std::string> timelapse_images = {};
             int timelapse_every = 50;
             int max_width = 3840;

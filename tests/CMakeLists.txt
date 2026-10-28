@@ -801,6 +801,7 @@ set(TEST_FILES
     fastgs_tile_culling_boundary_cuda.cu
     test_hdr_color_chain.cpp
     hdr_color_chain_cuda.cu
+    test_eval_split.cpp
     test_sh_swizzle_layout.cpp
     test_shn_bda_index_math.cpp
     test_python_io.cpp
@@ -1413,6 +1414,16 @@ add_test(NAME lichtfeld.hdr_color_chain
 set_tests_properties(lichtfeld.hdr_color_chain PROPERTIES
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     LABELS "fast;gpu"
+    TIMEOUT 60
+)
+
+# HDR fork (PLAN.md M3 §1): the position hold-out rule (no GPU).
+add_test(NAME lichtfeld.hdr_eval_split
+    COMMAND $<TARGET_FILE:lichtfeld_tests> "--gtest_filter=EvalSplitTest.*" --gtest_color=no
+)
+set_tests_properties(lichtfeld.hdr_eval_split PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    LABELS "fast"
     TIMEOUT 60
 )
 

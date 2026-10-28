@@ -176,6 +176,13 @@ namespace lfs::python {
             "test_every", "Test Every", 8, 1, 10000, "Use every Nth image for testing", true,
             [](const DatasetConfig& c) { return c.test_every; });
 
+        add_bool(
+            "test_by_position", "Test By Position", false,
+            "Hold out every Nth position (image name up to its last '_') with all its frames, not every Nth image",
+            false,
+            [](const DatasetConfig& c) { return c.test_by_position; },
+            [](DatasetConfig& c, bool v) { c.test_by_position = v; });
+
         add_int(
             "max_width", "Max Width", 3840, 0, 65535, "Maximum image width; 0 disables the cap", false,
             [](const DatasetConfig& c) { return c.max_width; },
@@ -1131,6 +1138,45 @@ namespace lfs::python {
                 [](PyOptimizationParams&, float v) { modify_params([v](auto& p) { p.hdr_color_max = v; }); },
                 "Largest radiance a splat can emit in HDR mode (absolute; 0 = 1000 x hdr_scale, resolved at load)")
             .def_prop_rw(
+                "hdr_brackets",
+                [](PyOptimizationParams& self) { return self.params().hdr_brackets; },
+                [](PyOptimizationParams&, bool v) { modify_params([v](auto& p) { p.hdr_brackets = v; }); },
+                "HDR trained directly on the bracket JPEGs through the fixed Debevec LUT of hdr_crf (implies hdr)")
+            .def_prop_rw(
+                "hdr_crf",
+                [](PyOptimizationParams& self) { return lfs::core::path_to_utf8(self.params().hdr_crf); },
+                [](PyOptimizationParams&, const std::string& v) {
+                    modify_params([v](auto& p) { p.hdr_crf = lfs::core::utf8_to_path(v); });
+                },
+                "crf.json of the bracket set (log_irradiance[3][256] + exif_ev_ref); required with hdr_brackets")
+            .def_prop_rw(
+                "hdr_exposure",
+                [](PyOptimizationParams& self) {
+                    return std::string(lfs::core::param::hdr_exposure_mode_name(self.params().hdr_exposure));
+                },
+                [](PyOptimizationParams&, const std::string& v) {
+                    const auto mode = lfs::core::param::hdr_exposure_mode_from_string(v);
+                    if (!mode)
+                        throw std::invalid_argument("hdr_exposure must be 'exif' or 'learn'");
+                    modify_params([mode](auto& p) { p.hdr_exposure = *mode; });
+                },
+                "Per-frame exposure in bracket mode: 'exif' (frozen at the EXIF gain) or 'learn' (EXIF gain x 2^delta)")
+            .def_prop_rw(
+                "hdr_exposure_prior",
+                [](PyOptimizationParams& self) { return self.params().hdr_exposure_prior; },
+                [](PyOptimizationParams&, float v) { modify_params([v](auto& p) { p.hdr_exposure_prior = v; }); },
+                "Weight of mean(delta^2) in the loss (bracket mode, learn)")
+            .def_prop_rw(
+                "hdr_exposure_lr",
+                [](PyOptimizationParams& self) { return self.params().hdr_exposure_lr; },
+                [](PyOptimizationParams&, float v) { modify_params([v](auto& p) { p.hdr_exposure_lr = v; }); },
+                "Adam learning rate of the exposure deltas (bracket mode, learn)")
+            .def_prop_rw(
+                "hdr_exposure_max_delta",
+                [](PyOptimizationParams& self) { return self.params().hdr_exposure_max_delta; },
+                [](PyOptimizationParams&, float v) { modify_params([v](auto& p) { p.hdr_exposure_max_delta = v; }); },
+                "Largest |delta| of a frame's exposure from its EXIF gain, in stops")
+            .def_prop_rw(
                 "use_exposure_correction",
                 [](PyOptimizationParams& self) { return self.params().use_exposure_correction; },
                 [](PyOptimizationParams&, bool v) { modify_params([v](auto& p) { p.use_exposure_correction = v; }); },
@@ -1505,6 +1551,15 @@ namespace lfs::python {
                     self.params().test_every = v;
                 },
                 "Use every Nth image for testing")
+            .def_prop_rw(
+                "test_by_position",
+                [](const PyDatasetConfig& self) { return self.params().test_by_position; },
+                [](PyDatasetConfig& self, bool v) {
+                    if (!self.can_edit())
+                        throw std::runtime_error("Cannot edit dataset params during training");
+                    self.params().test_by_position = v;
+                },
+                "Hold out every Nth position (image name up to its last '_') with all its frames")
             .def_prop_rw(
                 "resize_factor",
                 [](const PyDatasetConfig& self) { return self.params().resize_factor; },

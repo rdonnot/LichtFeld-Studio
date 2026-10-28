@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "trainer.hpp"
+#include "eval_split.hpp"
 #include "backward.h" // BWD-A T_eff hist arm/flush
 #include "components/bilateral_grid.hpp"
 #include "components/holdout_appearance.hpp"
@@ -2939,6 +2940,7 @@ namespace lfs::training {
             dataset_config.resize_factor = params.dataset.resize_factor;
             dataset_config.max_width = params.dataset.max_width;
             dataset_config.test_every = params.dataset.test_every;
+            dataset_config.test_by_position = params.dataset.test_by_position;
 
             // Get enabled cameras with images from the scene
             std::vector<std::shared_ptr<lfs::core::Camera>> source_cameras;
@@ -2963,6 +2965,7 @@ namespace lfs::training {
                                                     return camera->split() == lfs::core::CameraSplit::Eval;
                                                 });
                 if (params.overrides.has_dataset_key("test_every") ||
+                    params.overrides.has_dataset_key("test_by_position") ||
                     (!keep_project_split &&
                      (params.overrides.has_optimization_key("enable_eval") ||
                       params.overrides.has_optimization_key("eval_all")))) {
@@ -2976,10 +2979,9 @@ namespace lfs::training {
                             return lhs->uid() < rhs->uid();
                         });
                     const int test_every = std::max(1, params.dataset.test_every);
+                    const auto held_out = eval_split_mask(source_cameras, test_every, params.dataset.test_by_position);
                     for (size_t i = 0; i < source_cameras.size(); ++i) {
-                        const bool is_val =
-                            hold_out &&
-                            (i % static_cast<size_t>(test_every)) == 0;
+                        const bool is_val = hold_out && held_out[i];
                         source_cameras[i]->set_split(
                             is_val ? lfs::core::CameraSplit::Eval
                                    : lfs::core::CameraSplit::Train);
@@ -8981,9 +8983,10 @@ namespace lfs::training {
             pipelined_config.prefetch_count = 8;
             pipelined_config.output_queue_size = 4;
             pipelined_config.io_threads = 2;
-            pipelined_config.use_16bit_color = params_.dataset.loading_params.use_16bit_color ||
-                                               params_.optimization.hdr;
-            pipelined_config.hdr_linear = params_.optimization.hdr;
+            // HDR from EXRs decodes float; HDR from brackets trains on 8-bit JPEGs through the LDR decode path.
+            const bool hdr_float_input = params_.optimization.hdr && !params_.optimization.hdr_brackets;
+            pipelined_config.use_16bit_color = params_.dataset.loading_params.use_16bit_color || hdr_float_input;
+            pipelined_config.hdr_linear = hdr_float_input;
 
             // Non-JPEG images (PNG, WebP) need CPU decoding - use more threads until cache warms
             constexpr size_t MIN_COLD_THREADS = 4;

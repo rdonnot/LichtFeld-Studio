@@ -101,6 +101,11 @@ namespace lfs::core::args {
             OptimizationCliBinding{"--ppisp-freeze", "ppisp_freeze_from_sidecar", Bool},
             OptimizationCliBinding{"--gut", "gut", Bool},
             OptimizationCliBinding{"--hdr", "hdr", Bool},
+            OptimizationCliBinding{"--hdr-brackets", "hdr_brackets", Bool},
+            OptimizationCliBinding{"--hdr-exposure", "hdr_exposure", Enum},
+            OptimizationCliBinding{"--hdr-exposure-prior", "hdr_exposure_prior", Float},
+            OptimizationCliBinding{"--hdr-exposure-lr", "hdr_exposure_lr", Float},
+            OptimizationCliBinding{"--hdr-exposure-max-delta", "hdr_exposure_max_delta", Float},
             OptimizationCliBinding{"--eval", "enable_eval", Bool},
             OptimizationCliBinding{"--eval-all", "eval_all", Bool},
             OptimizationCliBinding{"--eval-flip", "eval_flip", Bool},
@@ -838,6 +843,7 @@ namespace {
             ::args::Group dataset_group(parser, "DATASET OPTIONS:");
             ::args::ValueFlag<std::string> images_folder(dataset_group, "images", "Images folder name", {"images"});
             ::args::ValueFlag<int> test_every(dataset_group, "test_every", "Use every Nth image as test", {"test-every"});
+            ::args::Flag test_by_position(dataset_group, "test_by_position", "Hold out whole positions: an image's position is its name up to the last '_' (pos_000_f3 -> pos_000); every Nth position (--test-every) is held out with all its frames", {"test-by-position"});
             ::args::MapFlag<std::string, int> resize_factor(dataset_group, "resize_factor",
                                                             "Resize resolution by factor: auto, 1, 2, 4, 8 (default: auto)",
                                                             {'r', "resize_factor"},
@@ -914,6 +920,12 @@ namespace {
             ::args::ValueFlag<std::string> ppisp_sidecar_path(rendering_group, "path", "Path to PPISP sidecar (.ppisp) used for frozen PPISP training", {"ppisp-sidecar"});
             ::args::Flag gut(rendering_group, "gut", lfs::core::args::optimization_cli_help("--gut"), {"gut"});
             ::args::Flag hdr(rendering_group, "hdr", lfs::core::args::optimization_cli_help("--hdr"), {"hdr"});
+            ::args::Flag hdr_brackets(rendering_group, "hdr_brackets", lfs::core::args::optimization_cli_help("--hdr-brackets"), {"hdr-brackets"});
+            ::args::ValueFlag<std::string> hdr_crf(rendering_group, "path", "crf.json of the bracket set (Debevec log_irradiance[3][256] + exif_ev_ref); required with --hdr-brackets", {"hdr-crf"});
+            ::args::ValueFlag<std::string> hdr_exposure(rendering_group, "hdr_exposure", lfs::core::args::optimization_cli_help("--hdr-exposure"), {"hdr-exposure"});
+            ::args::ValueFlag<float> hdr_exposure_prior(rendering_group, "weight", lfs::core::args::optimization_cli_help("--hdr-exposure-prior"), {"hdr-exposure-prior"});
+            ::args::ValueFlag<float> hdr_exposure_lr(rendering_group, "lr", lfs::core::args::optimization_cli_help("--hdr-exposure-lr"), {"hdr-exposure-lr"});
+            ::args::ValueFlag<float> hdr_exposure_max_delta(rendering_group, "stops", lfs::core::args::optimization_cli_help("--hdr-exposure-max-delta"), {"hdr-exposure-max-delta"});
 
             // =============================================================================
             // OUTPUT OPTIONS
@@ -1443,6 +1455,9 @@ namespace {
                 !lfs::core::param::ppisp_holdout_appearance_from_string(::args::get(ppisp_holdout_appearance)))
                 return std::unexpected("ERROR: --ppisp-holdout-appearance must be mean or nearest");
 
+            if (hdr_exposure && !lfs::core::param::hdr_exposure_mode_from_string(::args::get(hdr_exposure)))
+                return std::unexpected("ERROR: --hdr-exposure must be exif or learn");
+
             if (morton_reorder_interval) {
                 const int interval = ::args::get(morton_reorder_interval);
                 if (interval < 0) {
@@ -1539,6 +1554,7 @@ namespace {
                                         config_file_val = cli_option_present({"--config"}) ? std::optional<std::string>(::args::get(config_file)) : std::optional<std::string>(),
                                         images_folder_val = cli_option_present({"--images"}) ? std::optional<std::string>(::args::get(images_folder)) : std::optional<std::string>(),
                                         test_every_val = cli_option_present({"--test-every"}) ? std::optional<int>(::args::get(test_every)) : std::optional<int>(),
+                                        test_by_position_flag = bool(test_by_position),
                                         thin_structure_weight_val = cli_option_present({"--thin-structure-weight"}) ? std::optional<float>(::args::get(thin_structure_weight)) : std::optional<float>(),
                                         late_lr_anneal_val = cli_option_present({"--late-lr-anneal"}) ? std::optional<float>(::args::get(late_lr_anneal)) : std::optional<float>(),
                                         gradient_loss_weight_val = cli_option_present({"--gradient-loss-weight"}) ? std::optional<float>(::args::get(gradient_loss_weight)) : std::optional<float>(),
@@ -1616,6 +1632,12 @@ namespace {
                                         random_flag = bool(random),
                                         gut_flag = bool(gut),
                                         hdr_flag = bool(hdr),
+                                        hdr_brackets_flag = bool(hdr_brackets),
+                                        hdr_crf_val = cli_option_present({"--hdr-crf"}) ? std::optional<std::string>(::args::get(hdr_crf)) : std::optional<std::string>(),
+                                        hdr_exposure_val = cli_option_present({"--hdr-exposure"}) ? std::optional<std::string>(::args::get(hdr_exposure)) : std::optional<std::string>(),
+                                        hdr_exposure_prior_val = cli_option_present({"--hdr-exposure-prior"}) ? std::optional<float>(::args::get(hdr_exposure_prior)) : std::optional<float>(),
+                                        hdr_exposure_lr_val = cli_option_present({"--hdr-exposure-lr"}) ? std::optional<float>(::args::get(hdr_exposure_lr)) : std::optional<float>(),
+                                        hdr_exposure_max_delta_val = cli_option_present({"--hdr-exposure-max-delta"}) ? std::optional<float>(::args::get(hdr_exposure_max_delta)) : std::optional<float>(),
                                         undistort_flag = bool(undistort),
                                         enable_sparsity_flag = bool(enable_sparsity),
                                         invert_masks_flag = bool(invert_masks),
@@ -1705,6 +1727,7 @@ namespace {
                 setFlag(tcp_connection_flag, svs.tcp_connection);
                 setVal(images_folder_val, ds.images);
                 setVal(test_every_val, ds.test_every);
+                setFlag(test_by_position_flag, ds.test_by_position);
                 setVal(thin_structure_weight_val, opt.thin_structure_weight);
                 setVal(late_lr_anneal_val, opt.late_lr_anneal);
                 setVal(gradient_loss_weight_val, opt.gradient_loss_weight);
@@ -1801,14 +1824,23 @@ namespace {
                 }
                 setFlag(random_flag, opt.random);
                 setFlag(gut_flag, opt.gut);
-                if (hdr_flag) {
+                if (hdr_flag || hdr_brackets_flag) {
                     // --hdr: linear radiance against EXRs. The MRNF default exposure correction (PPISP +
                     // bilateral grid) and the [0,1] colour prior have no meaning there; clear them so the
                     // flag alone is a valid configuration instead of a validation error.
+                    // --hdr-brackets implies it (the same radiance model, trained from the JPEGs).
                     opt.hdr = true;
                     opt.use_exposure_correction = false;
                     opt.dc_reg = 0.0f;
                 }
+                setFlag(hdr_brackets_flag, opt.hdr_brackets);
+                if (hdr_crf_val)
+                    opt.hdr_crf = absolute_input_path(*hdr_crf_val);
+                if (hdr_exposure_val)
+                    opt.hdr_exposure = *lfs::core::param::hdr_exposure_mode_from_string(*hdr_exposure_val);
+                setVal(hdr_exposure_prior_val, opt.hdr_exposure_prior);
+                setVal(hdr_exposure_lr_val, opt.hdr_exposure_lr);
+                setVal(hdr_exposure_max_delta_val, opt.hdr_exposure_max_delta);
                 setFlag(undistort_flag, opt.undistort);
                 setFlag(enable_sparsity_flag, opt.enable_sparsity);
                 if (no_error_map_flag)
@@ -1863,6 +1895,7 @@ namespace {
 
                 note_ds("images", images_folder_val.has_value());
                 note_ds("test_every", test_every_val.has_value());
+                note_ds("test_by_position", test_by_position_flag);
                 note_ds("timelapse_images", timelapse_images_val.has_value());
                 note_ds("timelapse_every", timelapse_every_val.has_value());
                 note_ds("output_name", output_name_val.has_value());
@@ -1894,8 +1927,8 @@ namespace {
                 note_opt("mip_filter", enable_mip_flag);
                 note_opt("use_bilateral_grid", use_bilateral_grid_flag);
                 note_opt("use_exposure_correction",
-                         use_exposure_correction_flag || no_exposure_correction_flag || hdr_flag);
-                note_opt("dc_reg", hdr_flag);
+                         use_exposure_correction_flag || no_exposure_correction_flag || hdr_flag || hdr_brackets_flag);
+                note_opt("dc_reg", hdr_flag || hdr_brackets_flag);
                 note_opt("use_ppisp", use_ppisp_flag || ppisp_controller_flag ||
                                           ppisp_freeze_from_sidecar_flag);
                 note_opt("ppisp_use_controller", ppisp_controller_flag);
@@ -1921,7 +1954,13 @@ namespace {
                 note_opt("bg_image_path", bg_image_path_val.has_value());
                 note_opt("random", random_flag);
                 note_opt("gut", gut_flag);
-                note_opt("hdr", hdr_flag);
+                note_opt("hdr", hdr_flag || hdr_brackets_flag);
+                note_opt("hdr_brackets", hdr_brackets_flag);
+                note_opt("hdr_crf", hdr_crf_val.has_value());
+                note_opt("hdr_exposure", hdr_exposure_val.has_value());
+                note_opt("hdr_exposure_prior", hdr_exposure_prior_val.has_value());
+                note_opt("hdr_exposure_lr", hdr_exposure_lr_val.has_value());
+                note_opt("hdr_exposure_max_delta", hdr_exposure_max_delta_val.has_value());
                 note_opt("undistort", undistort_flag);
                 note_opt("enable_sparsity", enable_sparsity_flag);
                 note_opt("use_error_map", no_error_map_flag);

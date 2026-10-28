@@ -10,6 +10,7 @@
 #include "core/path_utils.hpp"
 #include "core/tensor.hpp"
 #include "io/pipelined_image_loader.hpp"
+#include "eval_split.hpp"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -230,6 +231,7 @@ namespace lfs::training {
         int resize_factor = 1;
         int max_width = 0;
         int test_every = 8;
+        bool test_by_position = false; // eval_split.hpp: every test_every-th POSITION with all its frames
     };
 
     /// Camera dataset - loads images from cameras
@@ -282,11 +284,12 @@ namespace lfs::training {
                     }
                 }
             } else {
+                const auto held_out = eval_split_mask(cameras_, config.test_every, config.test_by_position);
                 for (size_t i = 0; i < cameras_.size(); ++i) {
                     if (!cameras_[i]->has_image()) {
                         continue;
                     }
-                    const bool is_test = (i % config.test_every) == 0;
+                    const bool is_test = held_out[i];
 
                     if (split_ == Split::ALL || (split_ == Split::TRAIN && !is_test) ||
                         (split_ == Split::VAL && is_test)) {
