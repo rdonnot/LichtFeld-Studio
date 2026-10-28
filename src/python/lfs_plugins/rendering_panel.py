@@ -744,7 +744,13 @@ class RenderingPanel(Panel):
         key = (self._ocio_config_name(), display)
         if key == self._ocio_lists_key:
             return False
+        previous = self._ocio_lists_key
         self._ocio_lists_key = key
+        # A view belongs to its display: once the user changes the display, the old view name must not travel with
+        # the next request (it would resolve to nothing and silently fall back to ACES). Not on the first refresh:
+        # that is the persisted selection being shown, not a change.
+        if previous is not None and previous[1] != display and str(getattr(s, "ocio_view", "") or ""):
+            s._set_without_session_dirty("ocio_view", "")
         try:
             displays = list(lf.io.ocio_displays())
             views = list(lf.io.ocio_views(display))

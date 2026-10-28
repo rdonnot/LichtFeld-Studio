@@ -228,11 +228,13 @@ namespace {
         const auto sweep = radiance_sweep();
         for (const auto& [config, config_name] : ocio_configs()) {
             const std::string display = "sRGB - Display";
-            for (const char* view : {"ACES 2.0 - SDR 100 nits (Rec.709)", "ACES 1.0 - SDR Video", "Un-tone-mapped", "Raw"}) {
+            int aces2_runs = 0;
+            for (const char* view : {"ACES 2.0 - SDR 100 nits (Rec.709)", "Un-tone-mapped", "Raw"}) {
                 const lfs::core::ocio::Selection sel{config, display, view, ""};
                 std::string error;
-                if (!lfs::core::ocio::validate(sel, &error))
-                    continue; // the CG config has no ACES 1.0 view; the studio config has both
+                // Every view here exists in both configs: a name that does not validate is a test bug, not a skip.
+                ASSERT_TRUE(lfs::core::ocio::validate(sel, &error)) << config_name << " / " << view << ": " << error;
+                aces2_runs += std::string_view(view).starts_with("ACES 2.0") ? 1 : 0;
                 const auto lut = lfs::core::ocio::lut_for(sel, lfs::core::ocio::kDefaultLutSize, &error);
                 ASSERT_TRUE(lut) << config_name << ' ' << view << ": " << error;
                 EXPECT_EQ(lut->size, 65);
@@ -262,6 +264,7 @@ namespace {
                 std::printf("[ ocio ] %s / %s / %s: %.1f dB, max |e| %.2f/255\n", config_name, display.c_str(), view,
                             stats.psnr, stats.max_abs * 255.0);
             }
+            EXPECT_GE(aces2_runs, 1) << config_name << ": the ACES 2.0 view never ran";
         }
     }
 

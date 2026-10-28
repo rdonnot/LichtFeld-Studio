@@ -362,11 +362,23 @@ i.e. the exposure is applied in scene-linear light **before** the view transform
 transform is baked once per selection into a **65³ float LUT over a per-channel log2 shaper** (−14 … +8
 stops of normalised radiance; node 0 is exactly black) by `core::ocio::lut_for`, uploaded to the compose
 pass as a storage buffer and sampled with trilinear interpolation (`display_color.inc` `lfsOcioLut`). Measured
-against OCIO's own CPU processor on 20 000 log-uniform radiances (−12 … +10 stops, random chroma): 68 dB on
-"ACES 2.0 - SDR 100 nits (Rec.709)", 71 dB "Un-tone-mapped", 60 dB "Raw" (unbounded, clipped at 1), 70 dB
-on the PQ 1000-nit view — the test floor is 45 dB and ≤ 2/255 max error
-(`tests/test_hdr_display_chain.cpp`, `HdrDisplayChainTest.Ocio*`). Settings: `color_tonemapping = "ocio"`,
-`ocio_display`, `ocio_view`, `ocio_look` (Python `lf.get_render_settings()`, persisted with the session).
+against OCIO's own CPU processor on 20 004 log-uniform radiances (−12 … +10 stops, random chroma), on the
+built-in studio config and Houdini 22's CG config:
+
+| "sRGB - Display" view | PSNR | max error |
+|---|---|---|
+| ACES 2.0 - SDR 100 nits (Rec.709) | 68.2 dB | 1.8 / 255 |
+| Un-tone-mapped (sRGB-encoded linear, clipped) | 56.9 dB | 5.1 / 255 |
+| Raw (linear, clipped) | 50.3 dB | 11.1 / 255 |
+
+The test floor is 45 dB, ≤ 2/255 on a tone-mapped view and ≤ 12/255 on the two clipped ones (their hard
+knee at 1.0 falls inside a 0.34-stop LUT cell) — `tests/test_hdr_display_chain.cpp`,
+`HdrDisplayChainTest.Ocio*`. Settings: `color_tonemapping = "ocio"`, `ocio_display`, `ocio_view`, `ocio_look`
+(Python `lf.get_render_settings()`, persisted with the session). The viewer's selection becomes the bake
+default (`lf.io.get_ocio()`) only when the viewer's LUT key changes — a `set_ocio` made after that keeps until
+the viewer's display / view / look is next changed. `tools/eval/ocio_check.py`'s PSNR bound (40 dB by default,
+45.0 dB measured through crf 10 video) catches a wrong gamma, primaries or EV placement but not LUT-level
+drift (a 2/255 error is invisible under the codec); the gtest above is what pins the LUT.
 
 Notes: the viewer's output is RGBA8, so an HDR view (PQ, HLG) is shown clipped — the maths is right, the
 swapchain is not HDR yet; "Raw" and "Un-tone-mapped" are not display encodings (linear, resp. sRGB-encoded
@@ -397,6 +409,10 @@ Python: `lf.io.ocio_available()`, `ocio_config_name()`, `ocio_working_space()`, 
 
 Trap: the app's OCIO (vcpkg 2.5.1) and PyOpenColorIO 2.6 ship *different versions* of the built-in configs
 (`studio-config-v4` vs `v5`), so a cross-check between the two must use a config **file**, not `ocio://…`.
+
+Trap: an explicit `ocio_look` is prepended as a `LookTransform` and the `DisplayViewTransform` still applies
+the look the view itself names (`looks:` in the config), so naming the view's own look again applies it twice;
+leave the look on "None" / empty for such a view (known, not fixed).
 
 ## Tools
 

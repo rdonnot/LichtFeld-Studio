@@ -13,7 +13,10 @@ declaration (chromaticities + lichtfeld_colorspace).
 
 The config is a FILE on purpose: the app's OCIO (2.5.1, vcpkg) and PyOpenColorIO (2.6) ship different
 versions of the built-in configs, and `ocio://studio-config-latest` would not name the same transform.
-The video codec (crf 18) is the floor of the comparison, not the LUT: expect >= 40 dB.
+The video codec (crf 18) is the floor of the comparison, not the LUT: expect >= 40 dB. That bound catches
+a wrong gamma, wrong primaries or an EV applied in the wrong place, but not LUT-level drift (a 2/255 error is
+invisible under the codec): the gtest `HdrDisplayChainTest.OcioLutMatchesTheCpuProcessorWithin45dB` is what
+pins the LUT itself.
 """
 
 from __future__ import annotations

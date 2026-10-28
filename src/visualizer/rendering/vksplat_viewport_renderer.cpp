@@ -1978,8 +1978,11 @@ namespace lfs::vis {
             const bool hdr_active = request.hdr_display && splat_data.is_hdr() &&
                                     std::isfinite(hdr.scale) && hdr.scale > 0.0f &&
                                     std::isfinite(hdr.color_max) && hdr.color_max > 0.0f;
-            // Tone 7 (OCIO) exists only for the HDR chain; LDR keeps 0..6 exactly as before.
-            uniforms.color_tonemapping = static_cast<std::uint32_t>(std::clamp(request.color_tonemapping, 0, hdr_active ? 7 : 6));
+            // Tone 7 (OCIO) exists only for the HDR chain; LDR keeps 0..6 exactly as before, and a persisted 7
+            // (an HDR session's choice) shown on an LDR model is the LDR default, not Neutral.
+            uniforms.color_tonemapping = hdr_active ? static_cast<std::uint32_t>(std::clamp(request.color_tonemapping, 0, 7))
+                                         : request.color_tonemapping == 7 ? 0u
+                                                                           : static_cast<std::uint32_t>(std::clamp(request.color_tonemapping, 0, 6));
             if (!hdr_active) {
                 uniforms.color_exposure = std::isfinite(request.color_exposure) ? std::clamp(request.color_exposure, 0.1f, 8.0f) : 1.0f;
                 uniforms.hdr_flags = 0u;
@@ -6426,8 +6429,29 @@ namespace lfs::vis {
         }
         bool lut_uploaded_now = false;
         if (use_ocio_lut && ocio_lut_uploaded_key_ != ocio_lut_->key) {
+            const VkBuffer previous_lut_buffer = ocio_lut_buffer_.deviceBuffer.buffer;
             renderer_.resizeDeviceBuffer(ocio_lut_buffer_, ocio_lut_->rgb.size(), true);
             ocio_lut_buffer_.deviceBuffer.label = "vksplat_ocio_lut";
+            if (previous_lut_buffer != VK_NULL_HANDLE && ocio_lut_buffer_.deviceBuffer.buffer == previous_lut_buffer) {
+                // Same VkBuffer re-filled in place: the previous frame's compose may still be reading it, so its
+                // compute read must finish before vkCmdUpdateBuffer writes (a grown buffer is a new allocation).
+                VkBufferMemoryBarrier2 reuse_barrier{};
+                reuse_barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+                reuse_barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+                reuse_barrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+                reuse_barrier.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+                reuse_barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+                reuse_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                reuse_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                reuse_barrier.buffer = ocio_lut_buffer_.deviceBuffer.buffer;
+                reuse_barrier.offset = ocio_lut_buffer_.deviceBuffer.offset;
+                reuse_barrier.size = ocio_lut_buffer_.deviceBuffer.size;
+                VkDependencyInfo reuse_dep{};
+                reuse_dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+                reuse_dep.bufferMemoryBarrierCount = 1;
+                reuse_dep.pBufferMemoryBarriers = &reuse_barrier;
+                vkCmdPipelineBarrier2(cmd, &reuse_dep);
+            }
             recordUpdateBufferChunks(cmd, ocio_lut_buffer_.deviceBuffer, ocio_lut_->rgb.data(),
                                      ocio_lut_->rgb.size() * sizeof(float));
             ocio_lut_uploaded_key_ = ocio_lut_->key;

@@ -55,7 +55,11 @@ namespace lfs::core::ocio {
         // Leaked on purpose (never destroyed at exit): OCIO's own statics may go first.
         auto& g_configs = *new std::map<std::string, OCIO::ConstConfigRcPtr>();   // by config_path ("" = env / built-in)
         auto& g_luts = *new std::map<std::string, std::shared_ptr<const Lut3D>>(); // by Lut3D::key
+        // Failed bakes by REQUEST key (the raw selection + what its empty fields resolve to + size): the viewer asks
+        // every frame, and a missing / broken config must be parsed and logged once, not per frame.
+        auto& g_lut_errors = *new std::map<std::string, std::string>();
         bool g_warned_scene_linear = false;
+        bool g_warned_linear_name = false;
 
         constexpr const char* kBuiltinConfig = "studio-config-latest";
 
@@ -88,9 +92,18 @@ namespace lfs::core::ocio {
         };
 
         std::string working_space_locked(const OCIO::ConstConfigRcPtr& config) {
-            for (const char* name : {"lin_srgb", "Linear Rec.709 (sRGB)", "lin_rec709_srgb", "lin_rec709", "linear"}) {
+            for (const char* name : {"lin_srgb", "Linear Rec.709 (sRGB)", "lin_rec709_srgb", "lin_rec709"}) {
                 if (config->getColorSpace(name))
                     return config->getCanonicalName(name);
+            }
+            if (config->getColorSpace("linear")) {
+                if (!g_warned_linear_name) {
+                    LOG_WARN("OCIO: config '{}' has no 'lin_srgb' / 'Linear Rec.709 (sRGB)' colorspace; LichtFeld's working "
+                             "space is taken as its 'linear' colorspace — only right if that is Rec.709-linear",
+                             config->getName());
+                    g_warned_linear_name = true;
+                }
+                return config->getCanonicalName("linear");
             }
             const char* role = config->getRoleColorSpace(OCIO::ROLE_SCENE_LINEAR);
             if (role != nullptr && role[0] != '\0' && config->getColorSpace(role)) {
@@ -207,6 +220,7 @@ namespace lfs::core::ocio {
 
     void set_current(const Selection& s) {
         std::lock_guard lock(g_mutex);
+        g_lut_errors.clear(); // a new process default is a new request: let a repaired config be tried again
         if (!s.config_path.empty() && s.config_path != g_current.config_path) {
             g_current.config_path = s.config_path;
             // A new config invalidates the display/view/look chosen for the old one.
@@ -346,6 +360,15 @@ namespace lfs::core::ocio {
     std::shared_ptr<const Lut3D> lut_for(const Selection& selection, const int size_in, std::string* error) {
         std::lock_guard lock(g_mutex);
         const int size = std::clamp(size_in, 2, 129);
+        // Keyed before resolving: the failure may be the config itself (resolve_locked parses it).
+        const std::string request_key =
+            std::format("{}|{}|{}|{}|{}|{}|{}|{}|{}", selection.config_path, selection.display, selection.view, selection.look,
+                        g_current.config_path, g_current.display, g_current.view, g_current.look, size);
+        if (auto it = g_lut_errors.find(request_key); it != g_lut_errors.end()) {
+            if (error)
+                *error = it->second;
+            return nullptr;
+        }
         try {
             const Resolved r = resolve_locked(selection);
             const float lo = kDefaultLog2Lo, hi = kDefaultLog2Hi;
@@ -385,6 +408,7 @@ namespace lfs::core::ocio {
         } catch (const std::exception& e) {
             if (error)
                 *error = e.what();
+            g_lut_errors[request_key] = e.what();
             LOG_WARN("OCIO: cannot bake the display LUT: {}", e.what());
             return nullptr;
         }
