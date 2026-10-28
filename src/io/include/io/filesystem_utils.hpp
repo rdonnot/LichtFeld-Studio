@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "core/logger.hpp"
 #include "core/native_fs.hpp"
 #include "core/path_utils.hpp"
 #include "io/loader.hpp"
@@ -14,6 +15,7 @@
 #include <cmath>
 #include <filesystem>
 #include <functional>
+#include <mutex>
 #include <span>
 #include <string>
 #include <string_view>
@@ -368,8 +370,21 @@ namespace lfs::io {
         for (const char* ext : alternates) {
             std::filesystem::path candidate = relative;
             candidate.replace_extension(ext);
-            if (candidate != relative && safe_exists(images_path / candidate))
+            if (candidate != relative && safe_exists(images_path / candidate)) {
+                // Say so once per file (the loaders resolve a name more than once per load).
+                static std::mutex logged_mutex;
+                static std::unordered_set<std::string> logged;
+                const auto key = lfs::core::path_to_utf8(images_path / candidate);
+                bool first = false;
+                {
+                    std::lock_guard<std::mutex> lock(logged_mutex);
+                    first = logged.insert(key).second;
+                }
+                if (first)
+                    LOG_INFO("Image '{}' not in '{}': using '{}' instead", lfs::core::path_to_utf8(relative),
+                             lfs::core::path_to_utf8(images_path), lfs::core::path_to_utf8(candidate));
                 return candidate;
+            }
         }
         return relative;
     }

@@ -401,7 +401,8 @@ namespace lfs::core::image_codecs {
             !check(exr_initialize_required_attr_simple(context.value, part, width, height, EXR_COMPRESSION_ZIP), error))
             return false;
         for (const char* channel : {"R", "G", "B"}) {
-            if (!check(exr_add_channel(context.value, part, channel, EXR_PIXEL_FLOAT, EXR_PERCEPTUALLY_LINEAR, 1, 1),
+            // Scene-linear radiance: pLinear = 0 (EXR_PERCEPTUALLY_LOGARITHMIC), OpenEXR's convention for RGB.
+            if (!check(exr_add_channel(context.value, part, channel, EXR_PIXEL_FLOAT, EXR_PERCEPTUALLY_LOGARITHMIC, 1, 1),
                        error))
                 return false;
         }
@@ -462,6 +463,12 @@ namespace lfs::core::image_codecs {
             }
             if (!check(exr_encoding_choose_default_routines(context.value, part, &pipeline.value), error) ||
                 !check(exr_encoding_run(context.value, part, &pipeline.value), error))
+                return false;
+        }
+        // The pipeline belongs to the context: destroy it BEFORE exr_finish frees that context.
+        if (pipeline.initialized) {
+            pipeline.initialized = false;
+            if (!check(exr_encoding_destroy(context.value, &pipeline.value), error))
                 return false;
         }
         // Finish explicitly: this writes the chunk table and reports a failure the destructor would swallow.

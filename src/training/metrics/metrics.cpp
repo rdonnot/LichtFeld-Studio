@@ -1065,14 +1065,18 @@ namespace lfs::training {
                     return evaluation_error("mesh mask covers no evaluated pixel", LFS_SOURCE_SITE_CURRENT());
             }
 
-            if (rendered->raw_image.is_valid())
-                rendered->raw_image = rendered->raw_image.clamp(0.0f, 1.0f);
             lfs::core::Tensor linear_render;
             if (params.optimization.hdr) {
                 linear_render = rendered->output.image;
                 rendered->output.image = kernels::hdr_mulaw_forward(
                     linear_render, params.optimization.hdr_scale, params.optimization.hdr_mu);
+                // A [0,1] clamp on radiance is meaningless and HDR has no appearance model, so the raw
+                // render is the corrected one: "Bias (raw)" is measured in the mu-law domain as well.
+                if (rendered->raw_image.is_valid())
+                    rendered->raw_image = rendered->output.image;
             } else {
+                if (rendered->raw_image.is_valid())
+                    rendered->raw_image = rendered->raw_image.clamp(0.0f, 1.0f);
                 rendered->output.image = image_for_metrics(rendered->output.image, inputs.bit_depth);
             }
 
@@ -1417,9 +1421,10 @@ namespace lfs::training {
                 report_file << "FLIP:  " << *final.flip << "\n";
             report_file << "Time per image: " << final.elapsed_time << " seconds\n";
             report_file << "Number of Gaussians: " << final.num_gaussians << "\n";
-            report_file << "Bias (raw):  (" << final.bias_r << ", " << final.bias_g << ", " << final.bias_b << ")\n";
-            report_file << "Bias (corrected):  (" << final.bias_corr_r << ", " << final.bias_corr_g << ", "
-                        << final.bias_corr_b << ")\n";
+            report_file << "Bias (raw" << bias_domain_suffix_ << "):  (" << final.bias_r << ", " << final.bias_g << ", "
+                        << final.bias_b << ")\n";
+            report_file << "Bias (corrected" << bias_domain_suffix_ << "):  (" << final.bias_corr_r << ", "
+                        << final.bias_corr_g << ", " << final.bias_corr_b << ")\n";
             if (final.normal_angle_deg && std::isfinite(*final.normal_angle_deg)) {
                 report_file << "Normal angle (deg): " << *final.normal_angle_deg << "\n";
             }
@@ -1479,8 +1484,9 @@ namespace lfs::training {
             if (params.optimization.hdr)
                 _reporter->set_photometric_domain(std::format(
                     "mu-law (HDR): PSNR/SSIM/LPIPS on log1p(mu*x)/log1p(mu), x = radiance / s, mu = {}, s = {}; "
-                    "linear renders in eval_step_N/<image>.exr",
-                    params.optimization.hdr_mu, params.optimization.hdr_scale));
+                    "linear renders in eval_step_N/<image>.exr; the bias rows are mu-law too (no raw [0,1] clamp)",
+                    params.optimization.hdr_mu, params.optimization.hdr_scale),
+                                                 ", mu-law");
         }
     }
 
