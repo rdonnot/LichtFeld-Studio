@@ -17,6 +17,11 @@ Subcommands (from tools/: `uv run python eval/hdr_ply.py <cmd> …`):
     compare <a> <b> [--directions 1024]          radiance of A against B on random directions (each file decoded
                                                  by its own header), relative-error quantiles
     range <ply>                                  min / max of the expansion on the sphere (baked LDR must be [0,1])
+    prescale <in> <out> [--white W|scale|max]    a linear HDR PLY with every radiance divided by W (f_dc through
+                                                 the 0.5 offset, f_rest directly), header rescaled, `hdr_prescale W`
+                                                 added — for renderers that clamp each splat's colour to [0, 1]
+                                                 before their own gain (OctaneRender's Intensity, Karma XPU's
+                                                 ≈ 346 clip): set the gain to W and the output is radiance again
 """
 
 from __future__ import annotations
@@ -221,6 +226,57 @@ def rel_error_quantiles(a: np.ndarray, b: np.ndarray, eps: float) -> dict:
 
 # ── CLI ──────────────────────────────────────────────────────────────────────────────────────────────
 
+def prescale(src: Path, dst: Path, white: float) -> dict:
+    """Divide a linear HDR PLY's radiance by `white`: f_dc' = ((0.5 + C0 f_dc) / white - 0.5) / C0, f_rest' = f_rest / white.
+
+    The header stays a valid LichtFeld HDR header for the scaled values (hdr_scale / hdr_color_max / display exposure
+    divided or multiplied by `white`) and gains `comment hdr_prescale <white>` so a reader can undo it.
+    """
+    lines, hdr, data = read_ply(src)
+    if hdr["mode"] != "linear":
+        raise ValueError(f"{src}: prescale needs a `lichtfeld_hdr linear` PLY (got {hdr['mode']!r})")
+    if not (white > 0) or not np.isfinite(white):
+        raise ValueError(f"white must be a positive finite number, got {white!r}")
+    out = data.copy()
+    dc_names = [f"f_dc_{i}" for i in range(3)]
+    rest_names = [n for n in out.dtype.names if n.startswith("f_rest_")]
+    before = np.stack([0.5 + C0 * out[n].astype(np.float64) for n in dc_names], axis=1)
+    for i, n in enumerate(dc_names):
+        out[n] = ((before[:, i] / white - 0.5) / C0).astype(out.dtype[n])
+    for n in rest_names:
+        out[n] = (out[n].astype(np.float64) / white).astype(out.dtype[n])
+    comments = []
+    for ln in lines:
+        if not ln.startswith("comment "):
+            continue
+        parts = ln.split()
+        if len(parts) >= 3 and parts[1] in ("hdr_scale", "hdr_color_max", "hdr_display_exposure", "hdr_prescale"):
+            continue
+        comments.append(ln[len("comment "):])
+    scale = hdr["scale"] / white if hdr["scale"] else 0.0
+    comments += [f"hdr_scale {scale!r}", f"hdr_color_max {hdr['color_max'] / white!r}",
+                 f"hdr_display_exposure {(1.0 / scale) if scale > 0 else 1.0!r}", f"hdr_prescale {white!r}"]
+    write_ply(dst, out, comments)
+    after = np.stack([0.5 + C0 * out[n].astype(np.float64) for n in dc_names], axis=1)
+    return {"src": str(src), "dst": str(dst), "white": white, "vertices": int(out.shape[0]),
+            "dc_max_before": float(before.max()), "dc_max_after": float(after.max()),
+            "splats_above_1_after": float((after.max(axis=1) > 1.0).mean())}
+
+
+def cmd_prescale(args) -> int:
+    _, hdr, data = read_ply(args.src)
+    w = args.white
+    if w == "scale":
+        white = hdr["scale"]
+    elif w == "max":
+        dc, _, _ = sh_columns(data)
+        white = float((0.5 + C0 * dc).max())
+    else:
+        white = float(w)
+    print(json.dumps(prescale(args.src, args.dst, white), indent=2))
+    return 0
+
+
 def cmd_info(args) -> int:
     lines, hdr, data = read_ply(args.ply)
     dc, rest, degree = sh_columns(data)
@@ -292,6 +348,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--eps", type=float, default=1e-3); p.add_argument("--seed", type=int, default=0); p.set_defaults(fn=cmd_compare)
     p = sub.add_parser("range"); p.add_argument("ply", type=Path); p.add_argument("--directions", type=int, default=512)
     p.add_argument("--max-splats", type=int, default=20000); p.add_argument("--seed", type=int, default=0); p.set_defaults(fn=cmd_range)
+    p = sub.add_parser("prescale"); p.add_argument("src", type=Path); p.add_argument("dst", type=Path)
+    p.add_argument("--white", default="scale", help="a radiance, or `scale` (= hdr_scale, the P99 white; default) or `max` (nothing clips)")
+    p.set_defaults(fn=cmd_prescale)
     args = ap.parse_args(argv)
     return args.fn(args)
 

@@ -357,6 +357,24 @@ ACES 1.3 / 2.0 configs (`lin_srgb`), `scene_linear` / `linear` in a legacy confi
   Render with `husk -R BRAY_HdKarmaXPU --gpu` on a USD ROP export (the Karma LOP's `engine=xpu` did not reach the
   ROP headless); its EXR is tagged `lin_rec709`, its PNG is the config's default view (sRGB - Display /
   Un-tone-mapped, no tone curve). The camera: `c2w = inv(COLMAP w2c) · diag(1,−1,−1,1)`, focal 36·fx/W mm.
+- *OctaneRender* (verified Standalone 2026.5 and 2027.1 Alpha 3, 2026-10-28; Lua scripts, renders and
+  `measure2.json` in `out/verify_readers/octane/`): the native **Gaussian Splat** node (`NT_GEO_GAUSSIAN_SPLAT`,
+  `.ply` only — the 2026.5 loader refuses `.spz` despite the docs) reads every float as written (`f_dc` 2795.7 for
+  the first splat, DC max 73 833, in `A_GAUSSIAN_SPLAT_SPHERICAL_HARMONICS`), but **the render clamps each splat's
+  colour to [0, 1] BEFORE the node's Intensity pin**: the linear HDR PLY as is comes out flat at ≈ 1.0 everywhere
+  (lamp and floor alike, 4.3 dB μ-law), Intensity = 1/s gives exactly the same picture divided by s, and the
+  Color Space pin (sRGB / Linear sRGB / ACES2065-1 / ACEScg) does not move the cap. The way through is the same
+  as Karma's: ship the file **pre-divided by a white point W** and set **Intensity = W** —
+  `tools/eval/hdr_ply.py prescale in.ply out.ply --white scale` (W = `hdr_scale`, the P99 white) rendered the
+  held-out view at **29.7 dB** μ-law PSNR against LichtFeld's EXR (both Octane builds; luminance ratio 1.00 ± 0.04
+  from 1 to 2 400 radiance), with everything above W clipped per splat (the lamp reads W); `--white max` keeps the
+  lamp (15 500 of 17 300 at the peak, 29.6 dB) but values below ≈ 1 radiance fall into half-float subnormals and
+  go dark. Pick W = the brightest thing the shot must keep. Colour Space = **Linear sRGB**, Lighting Mode = None,
+  a black `NT_ENV_TEXTURE` (no environment = a white one), imager response `Linear/off`, gamma 1, highlight
+  compression 0, `EXR_32_LINEAR` (RGB, no alpha). Axes: 2026.5's node has **Flip Axes ON by default** (Y and Z
+  negated, COLMAP → Y-up) → camera = COLMAP pose with y, z negated; 2027.1 Alpha 3 has no such pin and loads
+  with x, y negated. FOV = horizontal, 2·atan(W/2fx). The baked LDR control renders at 26.5 dB (ACES curve vs
+  linear, expected).
 - *Nuke*: Read node **colorspace = Linear Rec.709 (sRGB)** (ACES configs) or `linear` (nuke-default); the
   `chromaticities` attribute does not drive Nuke's input transform, the Read node does.
 - *DaVinci Resolve* (ACES or RCM): EXR input colour space **Linear**, gamut **Rec.709** (in ACES: "Linear
@@ -432,5 +450,7 @@ leave the look on "None" / empty for such a view (known, not fixed).
 
 `tools/eval/hdr_ply.py` reads any of these files with numpy: `info`, `stamp` (add the comments to an M2-era
 PLY that holds log values as `f_dc`), `compare` (radiance of two files on random directions, each decoded by its
-own header), `range` (a baked file's expansion must stay in [0, 1]). `tools/eval/hdr_roundtrip.py` runs the full
+own header), `range` (a baked file's expansion must stay in [0, 1]), `prescale` (every radiance divided by a white
+point — `--white scale|max|<radiance>` — header rescaled and `hdr_prescale W` added, for renderers that clamp a
+splat's colour before their own gain: Octane's Intensity, Karma XPU; `tools/eval/test_hdr_prescale.py`). `tools/eval/hdr_roundtrip.py` runs the full
 measurement on a trained model (export → load → re-render → μ-law PSNR against the original eval EXRs).

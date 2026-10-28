@@ -885,8 +885,20 @@ any CUDA→CPU copy because nothing calls `PinnedMemoryAllocator::instance().shu
 `tests/test_main.cpp` does; run the suite through `build/tests`, not a standalone harness. (4) glslang needs the
 LUT SSBO declared before `display_color.inc` is included.
 
-**Owed.** Viewer HDR output (float swapchain / HDR displays); USD/NuRec carrying the colourspace; Houdini opening a
-tagged PLY (SideFX licence lapsed on this machine); Nuke/Resolve not tried.
+**Owed.** Viewer HDR output (float swapchain / HDR displays); USD/NuRec carrying the colourspace; Nuke/Resolve not
+tried. Houdini 22 verified 2026-10-28 (docs/hdr.md).
+
+**OctaneRender (2026-10-28, Standalone 2026.5 + 2027.1 Alpha 3, `out/verify_readers/octane/`).** The Gaussian Splat
+node keeps the floats (DC max 73 833 read back through `A_GAUSSIAN_SPLAT_SPHERICAL_HARMONICS`) but clamps every
+splat's colour to [0, 1] before its Intensity pin, on both builds: the linear PLY renders flat ≈ 1.0 (4.3 dB), Intensity
+= 1/s is the same picture / s (ratio 0.9999), the Color Space pin changes nothing. Pre-divided by `hdr_scale` with
+Intensity = `hdr_scale` → 29.7 dB μ-law vs LichtFeld's held-out EXR on both builds (lamp clipped at s); pre-divided by
+the colour max → 29.6 dB with the lamp kept (15 500 / 17 300) but the sub-1 radiance range lost to half-float
+subnormals. Hence `hdr_ply.py prescale` (+ test). The same pre-divide is what Karma XPU needed (346 clip): a
+`--hdr-export prescaled` option in the C++ exporter (W from the panel) is the natural next step — owed, not started.
+Axis trap: 2026.5 Flip Axes defaults ON (y, z negated), 2027.1 Alpha 3 has no pin and negates x, y; no environment =
+white; `.spz` refused by the 2026.5 loader. Octane needs the OTOY sign-in done once in the GUI; headless fails
+`Could not activate` (rc 100, no network call) when the stored session token is stale.
 
 ## Findings log
 (Claude appends notes per milestone here.)
