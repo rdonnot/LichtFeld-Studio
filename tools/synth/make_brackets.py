@@ -35,6 +35,7 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
+from PIL.TiffImagePlugin import IFDRational
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "eval"))
 from hdr_metrics import read_exr  # noqa: E402  (tools/eval: the one EXR reader)
@@ -93,8 +94,11 @@ def to_uint8(encoded: np.ndarray) -> np.ndarray:
 # ── EXIF ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 
-def _rational(x: float, denom: int = 1_000_000) -> tuple[int, int]:
-    return (int(round(x * denom)), denom)
+def _rational(x: float, denom: int = 1_000_000) -> IFDRational:
+    """An EXIF RATIONAL (type 5). A plain (num, den) tuple makes Pillow write two LONGs/SHORTs (count 2) instead:
+    Pillow reads that back, LichtFeld's `core/exif.cpp` does not — it took every ExposureTime as 1 s and seeded
+    all 200 frames of the room at log2(ISO/N²) = 2.64 EV (found 2026-10-28 by the M3 bracket set's load check)."""
+    return IFDRational(int(round(x * denom)), denom)
 
 
 def save_jpeg_with_exif(path: Path, rgb: np.ndarray, t: float, fnumber: float, iso: int, when: datetime,

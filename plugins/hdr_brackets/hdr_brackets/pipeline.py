@@ -2,7 +2,12 @@
 
 Stages, in order: read EXIF → group into brackets (+ manual overrides) → per bracket: load, align (MTB), flag
 ghosting → calibrate the CRF on a sample of brackets (or load a saved one) → merge each bracket to a linear EXR →
-tonemapped proxies → crf.json + exposures.json → SfM on the proxies → Report. The layout is dataset.py's.
+tonemapped proxies → crf.json + exposures.json → SfM on the proxies → the bracket training set (`brackets/`,
+brackets_set.py: the raw JPEGs with their position's pose, for `--hdr-brackets`) → Report. The layout is dataset.py's.
+
+`Options.reuse_sfm` keeps an existing `sparse/0` instead of running SfM again (the proxies are rewritten with the same
+names, so the poses stay valid as long as the positions come out the same — the registered count is re-read from
+the model); without a model it runs SfM as usual.
 
 The CRF is calibrated on RAW (unshifted) frames of brackets whose MTB shifts are all ≤ `Options.crf_max_shift` px:
 a 1-px shift is harmless to the response, a wrong one is fatal — one bracket shifted by a failed search poisoned the
@@ -28,6 +33,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import time
 from collections import Counter
 from collections.abc import Callable
@@ -39,6 +45,7 @@ import numpy as np
 from PIL import Image
 
 from . import align as align_mod
+from . import brackets_set
 from . import dataset as ds
 from ._tools import read_exr
 from .exif import ExposureInfo, list_images, read_exposure
@@ -58,7 +65,8 @@ STAGES: dict[str, tuple[float, float]] = {
     "Merging": (0.36, 0.70),
     "Proxies": (0.70, 0.80),
     "Writing dataset": (0.80, 0.82),
-    "SfM": (0.82, 1.00),
+    "SfM": (0.82, 0.98),
+    "Brackets": (0.98, 1.00),
 }
 #: CRF sample brackets are kept with their longest side ≤ this (stride subsampling).
 CRF_SAMPLE_MAX_SIDE = 1024
@@ -91,6 +99,8 @@ class Options:
     crf_lambda: float = 100.0  # response.py: why not 30
     crf_max_brackets: int = 12
     crf_max_shift: int = 2  # a calibration bracket's largest MTB shift (px)
+    write_brackets: bool = True  # brackets/: the raw JPEGs with their position's pose (brackets_set.py)
+    reuse_sfm: bool = False  # keep an existing sparse/0 instead of running SfM again
 
 
 @dataclass
@@ -110,6 +120,7 @@ class Report:
     skipped: list[str] = field(default_factory=list)
     proxy_scale: float | None = None
     stats: dict[str, Any] = field(default_factory=dict)
+    brackets: dict[str, Any] | None = None  # brackets_set.BracketsResult as a dict, None when not written
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -426,7 +437,10 @@ def run(
     prog("Calibrating CRF", 1.0)
 
     # ── 5 Merge ──
-    _clean_outputs(out, o.run_sfm)
+    reuse = o.run_sfm and o.reuse_sfm and brackets_set.find_sparse_model(out) is not None
+    if o.run_sfm and o.reuse_sfm and not reuse:
+        log.info("reuse_sfm: no model in %s/sparse; SfM runs", out)
+    _clean_outputs(out, o.run_sfm and not reuse)
     positions: list[ds.PositionResult] = []
     keys: list[float] = []
     for k, a in enumerate(aligned):
@@ -517,7 +531,27 @@ def run(
 
     # ── 8 SfM ──
     registered, total = 0, len(positions)
-    if o.run_sfm:
+    model: brackets_set.TextModel | None = None
+    if reuse:
+        prog("SfM", 0.0, "SfM reused")
+        try:
+            model = brackets_set.load_model(brackets_set.find_sparse_model(out))
+            proxies = {os.path.basename(p.proxy_rel) for p in positions}
+            names = {im.name for im in model.images}
+            registered = len(proxies & names)
+            stats["sfm_points"] = len(model.points3d)
+            stats["sfm_reused"] = True
+            if names - proxies:
+                warn(
+                    f"reused SfM model names {len(names - proxies)} image(s) this run did not write "
+                    f"({', '.join(sorted(names - proxies)[:4])}{' …' if len(names - proxies) > 4 else ''}): "
+                    "the positions changed, run SfM again"
+                )
+            log.info("SfM reused: %d/%d positions have a pose, %d points", registered, total, len(model.points3d))
+        except Exception as e:
+            warn(f"SfM (reused model): {e}")
+        prog("SfM", 1.0, "SfM reused")
+    elif o.run_sfm:
         prog("SfM", 0.0)
         try:
             from .sfm import run_sfm
@@ -533,6 +567,24 @@ def run(
     else:
         prog("SfM", 1.0, "SfM skipped")
 
+    # ── 9 Bracket training set ──
+    brackets: dict[str, Any] | None = None
+    if o.write_brackets:
+        prog("Brackets", 0.0)
+        if brackets_set.find_sparse_model(out) is None:
+            if o.run_sfm:
+                warn("brackets/: not written (SfM left no model, so no poses)")
+            else:
+                log.info("brackets/: not written (SfM is off: no poses; it needs a sparse/0)")
+        else:
+            try:
+                res_b = brackets_set.write_brackets(out, warnings=warnings, model=model)
+                if res_b is not None:
+                    brackets = dict(res_b.__dict__)
+            except Exception as e:
+                warn(f"brackets/: {e}")
+    prog("Brackets", 1.0)
+
     return report(
         **common,
         flagged=flagged,
@@ -542,4 +594,5 @@ def run(
         n_positions=len(positions),
         proxy_scale=shared,
         stats=stats,
+        brackets=brackets,
     )

@@ -60,6 +60,12 @@ def test_brackets_end_to_end(tmp_path: Path) -> None:
             assert mb.exif_float(ifd[mb.TAG_EXPOSURE_TIME]) == pytest.approx(r["exposure_time"], rel=1e-5)
             assert int(ifd[mb.TAG_ISO]) == r["iso"]
             assert str(ifd[mb.TAG_DATETIME_ORIGINAL]) == r["timestamp"]
+    # … and TYPED as EXIF says: RATIONAL (5), count 1. Pillow reads a (num, den) tuple back whatever Pillow wrote
+    # it as, LichtFeld's core/exif.cpp reads a single SHORT/LONG/RATIONAL only — the old two-LONG entry made it take
+    # every ExposureTime as 1 s (every frame seeded at log2(ISO/N²), found by the M3 load check, 2026-10-28).
+    types = exif_entry_types(out / meta["images"][0]["file"])
+    assert types[mb.TAG_EXPOSURE_TIME] == (5, 1) and types[mb.TAG_FNUMBER] == (5, 1)
+    assert types[mb.TAG_ISO][1] == 1 and types[mb.TAG_ISO][0] in (3, 4)
 
     # The eval path: EXR → exposure → the written CRF → the JPEG (noise + JPEG only).
     crf = json.loads((out / "crf.json").read_text())
@@ -73,3 +79,28 @@ def test_brackets_end_to_end(tmp_path: Path) -> None:
         ok = (photo > 5) & (photo < 250)
         err = np.abs(pred - photo)[ok]
         assert err.size > 0 and np.median(err) <= 3, f"EV {r['ev']}: median |Δ| {np.median(err)}"
+
+
+def exif_entry_types(path: Path) -> dict[int, tuple[int, int]]:
+    """{tag: (type, count)} of the IFD0 + Exif IFD entries, read from the APP1 bytes (no library's interpretation)."""
+    import struct
+
+    b = path.read_bytes()
+    i = b.find(b"Exif\x00\x00")
+    assert i >= 0
+    t = b[i + 6 :]
+    bo = "<" if t[:2] == b"II" else ">"
+    u16 = lambda o: struct.unpack(bo + "H", t[o : o + 2])[0]  # noqa: E731
+    u32 = lambda o: struct.unpack(bo + "I", t[o : o + 4])[0]  # noqa: E731
+    out: dict[int, tuple[int, int]] = {}
+
+    def ifd(off: int) -> None:
+        for k in range(u16(off)):
+            e = off + 2 + 12 * k
+            tag, typ, cnt, val = u16(e), u16(e + 2), u32(e + 4), u32(e + 8)
+            out[tag] = (typ, cnt)
+            if tag == mb.TAG_EXIF_IFD:
+                ifd(val)
+
+    ifd(u32(4))
+    return out

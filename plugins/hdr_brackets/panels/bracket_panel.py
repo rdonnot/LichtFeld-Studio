@@ -83,6 +83,7 @@ class BracketPanel(lf.ui.Panel):
         _, s.max_gap_s = ui.slider_float("Max gap between shots (s)", s.max_gap_s, 0.5, 30.0)
         _, s.deghost = ui.checkbox("Deghost moving content", s.deghost)
         _, s.run_sfm = ui.checkbox("Run SfM (COLMAP poses)", s.run_sfm)
+        _, s.write_brackets = ui.checkbox("Write bracket training set (brackets/)", s.write_brackets)
         cur = PROXY_OPERATORS.index(s.proxy_operator) if s.proxy_operator in PROXY_OPERATORS else 0
         ch, cur = ui.combo("Proxy tonemap", cur, PROXY_OPERATORS)
         if ch:
@@ -144,6 +145,13 @@ class BracketPanel(lf.ui.Panel):
             ui.label(f"SfM registered: {r.registered} / {r.total}")
         if getattr(r, "crf_path", None):
             ui.text_disabled(f"CRF: {r.crf_path}")
+        b = getattr(r, "brackets", None)
+        if b:
+            ui.text_disabled(
+                f"Brackets: {b['positions']} positions, {b['frames']} frames "
+                f"({b['link']}, exif_ev_ref {b['exif_ev_ref']:.2f}) -> brackets/"
+                + (f", {len(b['omitted'])} omitted" if b.get("omitted") else "")
+            )
         if r.flagged:
             ui.text_colored(f"Ghosting flagged in {len(r.flagged)} file(s):", (1.0, 0.8, 0.3, 1.0))
             for name in r.flagged[:20]:

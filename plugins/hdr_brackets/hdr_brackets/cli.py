@@ -18,6 +18,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("src", help="folder of bracketed photos (IMG_*.jpg with EXIF)")
     ap.add_argument("out", help="output dataset folder (images_hdr/, images/, sparse/, exposures.json)")
     ap.add_argument("--no-sfm", action="store_true", help="skip pycolmap SfM on the proxies")
+    ap.add_argument("--reuse-sfm", action="store_true", help="keep an existing <out>/sparse/0 instead of running SfM")
+    ap.add_argument(
+        "--brackets",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="write <out>/brackets/ (the raw JPEGs with their position's pose, for --hdr-brackets training)",
+    )
     ap.add_argument("--no-deghost", action="store_true", help="plain Debevec merge (OpenCV), no ghost weights")
     ap.add_argument("--proxy-ev", type=float, default=0.0, help="EV offset of the proxies' auto key")
     ap.add_argument("--proxy-operator", default="aces", choices=["aces", "reinhard", "linear"])
@@ -39,6 +46,8 @@ def main(argv: list[str] | None = None) -> int:
         run_sfm=not a.no_sfm,
         crf_path=a.crf,
         ghost_threshold=a.ghost_threshold,
+        write_brackets=a.brackets,
+        reuse_sfm=a.reuse_sfm,
     )
     last = [-1.0]
 

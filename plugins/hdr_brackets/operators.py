@@ -32,6 +32,7 @@ class Settings:
     proxy_operator: str = "aces"
     proxy_ev: float = 0.0
     run_sfm: bool = True
+    write_brackets: bool = True  # brackets/: the raw JPEGs + one pose each, what --hdr-brackets trains on
     overrides_text: str = ""
 
     def effective_out_dir(self) -> str:
@@ -107,6 +108,7 @@ def start_job(settings: Settings | None = None) -> tuple[bool, str]:
         proxy_operator=s.proxy_operator,
         proxy_ev=float(s.proxy_ev),
         run_sfm=bool(s.run_sfm),
+        write_brackets=bool(s.write_brackets),
         overrides=overrides,
     )
     with JOB.lock:
