@@ -49,7 +49,9 @@ ctest --test-dir build/tests -R '^lichtfeld.fast$'   # the gtest binary: a 60 s 
 
 # smoke-train (headless; `--test-every 8` holds out every 8th image, `--eval` is what writes <out>/metrics.csv)
 ./build/LichtFeld-Studio --headless --train -d data/smoke_ldr -o out/smoke_ldr --iter 3000 --test-every 8 --eval --export ply
-./build/LichtFeld-Studio --headless --train -d data/smoke_hdr -o out/smoke_hdr --iter 3000 --test-every 8 --eval --export ply --hdr   # M2+
+./build/LichtFeld-Studio --headless --train -d data/smoke_hdr --images images_hdr -o out/smoke_hdr --iter 3000 --test-every 8 --eval --export ply --hdr   # M2: ~34.5 dB mu-law
+cd tools && uv run python eval/ldr_reeval.py ../out/baseline_a/project.licht --reference ../out/baseline_a            # LDR bit-exact: must say identical twice
+cd tools && uv run python eval/compare_hdr_vs_proxy.py --hdr-run ../out/<hdr run> --proxy-run ../out/<proxy run> --step 7000 --dataset ../data/smoke_hdr --truth ../data/brackets_synth/gt
 cd tools && uv run python eval/ldr_regression.py ../out/smoke_ldr --milestone M0 --scene smoke_ldr --run baseline_a
 ```
 Traps: the shared `../vcpkg` registry checkout must be at least as new as the versions `vcpkg.json` overrides

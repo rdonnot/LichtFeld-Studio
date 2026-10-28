@@ -67,6 +67,24 @@ Plugin folder: `plugins/hdr_brackets/` (own uv env).
 
 **Done when:** trains on `smoke_hdr` EXRs without NaNs; log-luminance PSNR beats a baseline trained on the proxy LDR; `smoke_ldr` regression within ±0.1 dB.
 
+### M2 "Done when" — measured 2026-10-28 (merged into `hdr` as 21d9c0b1d)
+- **Trains on `smoke_hdr` EXRs without NaN:** yes. 7000 it `--hdr`: **36.5 dB μ-law** (SSIM 0.949, LPIPS 0.142),
+  s = 2421, resolved cap 2.42e6, max rendered radiance 15 835 (lamp truth ≈ 20 400, no longer capped); 3000 it: 34.5 dB.
+  The first 3000-it run had scored 27.5 dB: its sh0 init was 7.8 nats too dark (review item), and the dataset was the
+  pre-fix merge — the init now inverts the proxy through μ-law exactly like the MRNF seeds (the review's `ln(p·s)`
+  formula gave 32.9 dB but depth AbsRel 0.75; the μ-law inverse 34.5 dB / 0.080).
+- **Beats a baseline trained on the proxy LDR, like-for-like** (`tools/eval/compare_hdr_vs_proxy.py`: the proxy
+  model's 8-bit renders inverted through sRGB → ACES → `proxy_scale`; 5 held-out views, 7000 it both):
+  μ-law PSNR vs the merged EXRs **36.48 vs 35.09 (+1.39 dB)**, vs the synthetic truth 33.06 vs 31.98 (+1.08 dB); LDR
+  PSNR at the five source exposures 32.15 vs 30.21 (+1.94 dB), the gap largest at +4 EV (32.7 vs 27.6) where the proxy
+  has no information. Against the proxy trained with matched settings (exposure correction off, dc_reg 0): +1.59 /
+  +1.41 / +2.93 dB. The proxy GT itself inverts to 52.8 dB, so tonemapping + 8-bit is not the ceiling here;
+  the merge vs the truth is 36.05 dB, i.e. the HDR model is now within the merge's own error.
+- **`smoke_ldr` regression within ±0.1 dB:** exceeded — bit-identical re-evaluation of the frozen M0 project
+  (`ldr_reeval.py`, metrics and 16 PNGs) with the M2 binary, checked three times during M2.
+- Still owed (non-blocking, carried to M3): `_refine_weight_max` histogram overlap LDR vs HDR; `hdr_metrics.py
+  ldr-psnr` is now exercised through `compare_hdr_vs_proxy.py`.
+
 ### M2 design decision (hdr-architect, 2026-10-27) — implement exactly this, file:line read on v0.5.4.2
 
 **Decision.** Store **log-radiance in the SH**: in HDR mode the full SH sum `b = 0.5 + SH_C0·sh0 + Σ Yᵢcᵢ`
