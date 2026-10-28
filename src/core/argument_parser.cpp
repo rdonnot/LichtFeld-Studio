@@ -538,7 +538,7 @@ namespace {
         explicit HdrExportFlags(::args::Group& group)
             : mode(group, "mode", "HDR models only: how the exported files hold colour. linear = linear-radiance SH with the lichtfeld_hdr header (PLY default, read by any splat tool); baked = display-referred LDR at --hdr-export-ev through --hdr-tonemap, opens in any viewer (required for sog, ssog, spz, glb, html, usd, rad); log = the internal log SH (PLY only, LichtFeld reads it back losslessly)", {"hdr-export"}),
               tonemap(group, "operator", "Tone operator for --hdr-export baked: none, linear, filmic, hejl, aces (default), aces2, neutral", {"hdr-tonemap"}),
-              exposure(group, "ev", "Exposure for --hdr-export baked, in EV relative to the scene's natural exposure 1/s (default 0; the training flag --hdr-exposure exif|learn is a different thing)", {"hdr-export-ev"}) {}
+              exposure(group, "ev", "Exposure for --hdr-export baked, in EV relative to the scene's natural exposure 1/s (default 0)", {"hdr-export-ev"}) {}
 
         std::optional<std::string> read(lfs::core::hdr::ExportOptions& options) {
             if (mode) {
