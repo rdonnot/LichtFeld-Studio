@@ -4,6 +4,7 @@
 
 #include "metrics.hpp"
 #include "../kernels/normal_loss.hpp"
+#include "../eval_split.hpp"
 #include "../rasterization/fast_rasterizer.hpp"
 #include "../rasterization/gsplat_rasterizer.hpp"
 #include "core/cuda/lanczos_resize/lanczos_resize.hpp"
@@ -661,8 +662,9 @@ namespace lfs::training {
                 if (!inputs.gt_image.is_valid() || inputs.gt_image.ndim() != 3 ||
                     inputs.gt_image.shape()[0] != 3)
                     return evaluation_error("failed to load evaluation image", LFS_SOURCE_SITE_CURRENT());
-                if (params.optimization.hdr) {
+                if (params.optimization.hdr && !params.optimization.hdr_brackets) {
                     // HDR: metrics in the mu-law domain of the P99-normalised linear radiance, on both sides.
+                    // (Bracket mode keeps the JPEG as an LDR target: see the render side below.)
                     inputs.bit_depth = 32;
                     inputs.gt_image = kernels::hdr_mulaw_forward(
                         inputs.gt_image.to(lfs::core::DataType::Float32).to(lfs::core::Device::CUDA),
@@ -1067,7 +1069,30 @@ namespace lfs::training {
             }
 
             lfs::core::Tensor linear_render;
-            if (params.optimization.hdr) {
+            if (params.optimization.hdr_brackets) {
+                // HDR from brackets (PLAN.md M3 §6): the appearance callback (the stage at this frame's EXIF gain,
+                // delta = 0) already turned the linear render into the LDR prediction; raw_image is the linear
+                // render, kept for the EXR. Metrics run on the LDR path like an LDR run, on the pixels the JPEG
+                // recorded unclipped (every channel in (5, 250)), through the metric mask.
+                linear_render = rendered->raw_image.is_valid() ? rendered->raw_image : lfs::core::Tensor{};
+                rendered->output.image = image_for_metrics(rendered->output.image.clamp(0.0f, 1.0f), inputs.bit_depth);
+                if (rendered->raw_image.is_valid())
+                    rendered->raw_image = rendered->output.image;
+                const bool codes = inputs.gt_image.dtype() == lfs::core::DataType::UInt8;
+                const auto gt_f = inputs.gt_image.to(lfs::core::DataType::Float32);
+                const float lo = codes ? 5.0f : 5.0f / 255.0f;
+                const float hi = codes ? 250.0f : 250.0f / 255.0f;
+                const auto unclipped = (gt_f.gt(lo) && gt_f.lt(hi)).all(0).to(lfs::core::DataType::UInt8).contiguous();
+                metric_mask = metric_mask.is_valid()
+                                  ? (metric_mask.to(lfs::core::DataType::Float32) *
+                                     unclipped.to(lfs::core::DataType::Float32))
+                                        .gt(0.5f)
+                                        .to(lfs::core::DataType::UInt8)
+                                        .contiguous()
+                                  : unclipped;
+                if (metric_mask.to(lfs::core::DataType::Float32).sum().item<float>() <= 0.0f)
+                    return evaluation_error("every pixel of this frame is clipped in the JPEG", LFS_SOURCE_SITE_CURRENT());
+            } else if (params.optimization.hdr) {
                 linear_render = rendered->output.image;
                 rendered->output.image = kernels::hdr_mulaw_forward(
                     linear_render, params.optimization.hdr_scale, params.optimization.hdr_mu);
@@ -1482,7 +1507,15 @@ namespace lfs::training {
         // Report files go to the output folder; without one, results are only returned.
         if (!params.dataset.output_path.empty()) {
             _reporter = std::make_unique<MetricsReporter>(params.dataset.output_path);
-            if (params.optimization.hdr)
+            if (params.optimization.hdr_brackets)
+                _reporter->set_photometric_domain(std::format(
+                    "LDR at each frame's EXIF exposure (HDR brackets): render x 2^(exif_ev - exif_ev_ref) through "
+                    "the Debevec LUT of '{}' (exposure delta = 0), PSNR/SSIM/LPIPS against the JPEG on the pixels it "
+                    "recorded unclipped (every channel in (5, 250); the rest masked); linear renders once per "
+                    "position in eval_step_N/<frame>.exr",
+                    lfs::core::path_to_utf8(params.optimization.hdr_crf)),
+                                                 ", LDR at EXIF exposure, saturation masked");
+            else if (params.optimization.hdr)
                 _reporter->set_photometric_domain(std::format(
                     "mu-law (HDR): PSNR/SSIM/LPIPS on log1p(mu*x)/log1p(mu), x = radiance / s, mu = {}, s = {}; "
                     "linear renders in eval_step_N/<image>.exr; the bias rows are mu-law too (no raw [0,1] clamp)",
@@ -1635,6 +1668,7 @@ namespace lfs::training {
         }
 
         const size_t val_dataset_size = val_dataset->size();
+        std::unordered_set<std::string> hdr_positions_written; // bracket mode: one EXR per position
         const auto image_stems = _params.optimization.enable_save_eval_images ? eval_image_stems(*val_dataset)
                                                                               : std::vector<std::string>{};
         size_t skipped_images = 0;
@@ -1723,7 +1757,11 @@ namespace lfs::training {
             if (_params.optimization.hdr && _params.optimization.enable_save_eval_images &&
                 prepared->linear_render.is_valid()) {
                 // The linear render beside the PNG: eval_step_N/<stem>.exr (tools/eval/hdr_metrics.py reads it).
-                if (!lfs::core::save_image_exr(eval_dir / (image_stems[image_idx] + ".exr"), prepared->linear_render))
+                // Bracket frames of one position share the radiance: written once per position (its first frame).
+                const bool skip = _params.optimization.hdr_brackets &&
+                                  !hdr_positions_written.insert(std::string(position_key(image_stems[image_idx]))).second;
+                if (!skip &&
+                    !lfs::core::save_image_exr(eval_dir / (image_stems[image_idx] + ".exr"), prepared->linear_render))
                     LOG_WARN("Eval: could not write the HDR render of '{}'", cam->image_name());
             }
             prepared->linear_render = {};

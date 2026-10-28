@@ -263,6 +263,125 @@ Alternative input path that skips merging (avoids ghosting):
 
 **Done when:** held-out PSNR at each exposure ≥ the M2 (merged) approach, or a written explanation of why not.
 
+### M3 — implementation notes (hdr-m3, 2026-10-28) — built to `docs/hdr-m3-design.md`, measured, Done-when NOT met
+
+**What changed** (three commits on `hdr-m3`; file:line on that branch).
+- *Hold-out by position* — `src/training/eval_split.hpp:27,32` `position_key` (name up to its LAST `_`) and
+  `eval_split_mask(names, test_every, by_position)`; the eight inline `% test_every` sites in
+  `training_setup.cpp`, `trainer.cpp` and `dataset.hpp` read the mask. `DatasetConfig::test_by_position` /
+  `--test-by-position`: on `data/smoke_hdr/brackets` with `--test-every 8` = 175 train + 25 val = pos_000/008/016/
+  024/032 with all five frames, M2's positions. `pos_NNN.png` names (no frame suffix) collapse to ONE position
+  under this rule — it is for bracket sets, the test says so (`tests/test_eval_split.cpp`).
+- *Parameters* — `hdr_brackets`, `hdr_crf`, `hdr_exposure` (`exif|learn`, string wire format),
+  `hdr_exposure_prior|lr|max_delta`; CLI `--hdr-brackets` implies `--hdr` (clears the MRNF exposure correction and
+  `dc_reg` like `--hdr`), `--hdr-crf`, `--hdr-exposure…`; registry, JSON, Python, golden JSONs; validation
+  (`parameters.cpp`: needs `hdr` and a crf; prior ≥ 0, lr > 0, max_delta > 0). Loader: the float / 16-bit /
+  `hdr_linear` decode is `hdr && !hdr_brackets` (trainer, both evaluator loaders) — the JPEGs take the LDR path.
+- *The stage* — `src/training/components/hdr_bracket_stage.{hpp,cpp}` + `kernels/hdr_bracket.{hpp,cu}`.
+  `HdrBracketCrf::load` (`:83`) reads `log_irradiance[3][256]` + `exif_ev_ref` (missing anchor → an error naming the
+  plugin's M3 set) and makes each curve strictly increasing in float32 (`:42`: running maximum, then one-ulp lifts
+  — the tooling's 1e-12 ramp vanishes in float32). Forward (`hdr_bracket.cu:37`): `x = v·2^(b+δ)`, `u = ln x`
+  clamped at `g[0]−5`, segment by binary search (`:24`), `z = (k + (u−g[k])/(g[k+1]−g[k]))/255`, extrapolated in u
+  beyond both ends (never clamped), the gate in the GT's own units (UInt8 codes ≥ 250 / ≤ 5 exact, Float32 the
+  same thresholds): a clipped-high JPEG pixel bounds the render from below only, clipped-low from above only, the
+  gated pixel's slope is 0. Backward (`:84`): `dz/dv = dz/du / v`, `dδ += Σ grad·dz/du·ln 2` by warp shuffles + one
+  atomic per block. Adam on δ per frame with the prior's gradient `2λδ` and the ±3-stop clamp, in a 1-thread kernel
+  (no host sync). `apply_eval(v, b)` (`hdr_bracket_stage.cpp:252`) is δ = 0, no gate.
+- *Trainer* — `initialize_hdr_bracket_stage` (`trainer.cpp:2868`: EXIF of every frame, training and held-out,
+  no fallback), `measure_hdr_scale_brackets` (`:2915`: P99 luminance of `E = exp(g_c[z])/2^b` over the unsaturated
+  pixels of up to 4 positions' whole brackets, and the per-EV gate fractions logged once), the GT stays the 8-bit
+  JPEG (`:6569`), `stage.apply` replaces the μ-law forward (`:7428`), `backward_in_place` the backward (`:8187`),
+  `step(uid)` after the PPISP block, skipped in POPSpa (`:8447`), δ statistics at every evaluation (`:3001`), the
+  evaluator's appearance callback renders held-out frames through `apply_eval` (`:3438`).
+- *Checkpoint* — `CheckpointFlags::HAS_HDR_BRACKET_STAGE = 1 << 5` (`checkpoint_format.hpp:36`, known from format
+  version 4, which a stage now stamps; the validator had rejected the unknown bit — the first smoke's project save
+  failed on it), the stage after POPSpa and before the parameter JSON (`checkpoint.cpp:419,934`), trailing defaulted
+  parameters on `serialize_checkpoint` / `load_checkpoint`, the snapshot request carries it, adopted by uid.
+- *Eval* — `metrics.cpp:1072`: bracket mode scores the LDR prediction (clamped, on the 8-bit grid like an LDR run)
+  against the JPEG on the pixels it recorded unclipped (every channel in (5, 250)) through the metric mask; the
+  domain string (`:1512`); the linear EXR once per position (`:1671`). `tools/eval/bracket_eval.py`: per held-out
+  position × source frame, render × `2^(exif_ev − exif_ev_ref)` → `hdr_metrics.apply_crf` → PSNR on the unclipped
+  pixels at gain 1 (the EXIF is the anchor; the fitted gain is printed as the unit check), μ-law vs the merge and vs
+  the truth × k (compare_hdr_vs_proxy.py's pooled k = 271.3); `--reference-run` rescores an M2 run the same way —
+  it reproduces M2's 32.15 / 36.48 / 33.06 exactly. Rows in `out/metrics.csv` (milestone M3, scene
+  `smoke_hdr_brackets`).
+- *M2 debt* — `LFS_REFINE_WEIGHT_HIST=1` logs the `_refine_weight_max` distribution at every refine
+  (`mrnf.cpp:1838`). 1500 iterations each, last refine: LDR `smoke_ldr` p50 119 / p90 522 / p99 2110, HDR-EXR
+  p50 68 / 449 / 2309, brackets p50 105 / 713 / 3959; 99.9 % of visible splats above `growth_grad_threshold`
+  (0.0031) in all three. The distributions overlap (the bracket tail is heavier — noisier error maps, below); no
+  retune indicated, as M2 argued.
+
+**Units and the gate, verified on the real set** (`data/smoke_hdr/brackets`, 40 positions × 5 frames, `exif_ev_ref`
+2.6439). `apply_crf(EXR · 2^(exif_ev − exif_ev_ref))` vs the JPEG: median |Δ| 1–2/255 at −4…+2 EV (4 at +4 EV, 9 %
+unclipped); the opposite sign is off by 60–230 codes (risk 1, not hit). The LUT is unbiased per code (merge →
+JPEG residual median 0 at every code bin 6–249; +2 at codes 0–5, the black floor the gate removes). Gate fractions
+per log2 gain at start: −10.64: 0.3 % high / 4.7 % low; −8.64: 0.7 / 0.9; −6.64: 33 / 0.5; −4.64: 57 / 0.2;
+−2.64 (+4 EV): 90 / 0.0 — the design's "+4 EV ≈ 40 %" was the pixel count, this is channel samples. s = 2180.5
+(−10 % of the merge's 2421: within 25 %; the P99 over unsaturated-only pixels is biased low, expected). Max rendered
+radiance 32 365 at 7000 it (12 084 at 3000; M2: 15 835; lamp truth ≈ 20 400). Loss finite throughout.
+
+**The table** (7000 iterations, `--test-every 8 --test-by-position`, `bracket_eval.py`, LDR PSNR at each source
+exposure on the unclipped pixels, gain 1; M2 = `out/m2_hdr7k` rescored by the same script):
+
+| run | −4 EV | −2 EV | 0 EV | +2 EV | +4 EV | **mean** | μ-law vs merge | μ-law vs truth | fitted gain (render / merge) | mean δ / mean |δ| | #GS |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| M2 `m2_hdr7k` (merged EXRs) | 33.29 | 33.13 | 31.34 | 30.33 | 32.66 | **32.15** | 36.48 | 33.06 | 1.026 / 1.004 | — | 965 k |
+| M3 `m3_learn` | 32.33 | 31.59 | 29.15 | 27.80 | 31.04 | **30.38** | 34.19 | 32.26 | 1.083 / 1.004 | −0.0003 / 0.0043 stop | 1 009 k |
+| M3 `m3_exif` (control) | 32.16 | 31.57 | 29.46 | 28.34 | 31.39 | **30.58** | 34.45 | 32.56 | 1.060 / 1.004 | 0 (frozen) | 1 012 k |
+
+In-app (LDR at EXIF exposure, saturation masked, all 25 frames): 30.53 / 30.74 dB. **Done-when fails by 1.6–1.8 dB
+on every EV**, +2 EV worst (−2.0…−2.5), −4 EV least (−1.0). `learn` ≈ `exif`: the deltas stay at 0.004 stop mean
+|δ| and the control is 0.2 dB better — the exposure model is not the cause and does not drift (§8.3 clean; the
+synthetic EXIF is exact, so this is as designed). The unit check passes for both (merge 1.004; render 1.06–1.08
+mean, 1.03 median at every EV — M2's render: 1.026 / 1.00): the bracket model is ~3 % darker than the JPEGs
+everywhere, M2's is not, and the rest of the mean is dark-region model error.
+
+**Why it loses, as far as the measurements say** (not tuned; the risks in §8 order — 1, 2, 3 and 4 were not hit):
+1. *Information per visit.* A merged EXR gives every pixel a target at every visit (175 visits per position in
+   7000 it). A bracket frame gives a target only in its unclipped band — 64 % of the 0 EV frame's pixels, 38 % at
+   +2, 7 % at +4 — and each frame is visited 35 times, so a radiance band is taught by the 1–2 frames that record it
+   unclipped, with a fifth of the visits. The loss plateaus higher and noisier (0.05–0.07 at 6000–6500 it vs M2's
+   0.013–0.016, different domains but the same trend) and the model is simply less converged at 7000 iterations. A
+   14 000-iteration `learn` run tests this directly (`out/m3_learn14k`, evaluated at 7000 and 14 000): per EV
+   33.26 / 32.66 / 30.24 / 28.69 / 31.70, **mean 31.31** (its own 7000-it step: 30.99 — run-to-run noise is
+   ~0.5 dB here), μ-law 35.12 vs merge, **33.03 vs truth = M2's 33.06**, 5.0 M splats (max_cap reached; MRNF grows
+   until 15 000). So the extra iterations buy +0.9 dB LDR and close the truth gap entirely, but 0.8 dB of LDR
+   distance to the merge remains at twice the compute: under-training is a large part of the loss, not all of it.
+2. *Noise and quantisation* (risk 5). The merge averaged the five frames' shot noise and 8-bit steps; the LDR loss
+   fits each frame's noise directly, and the SSIM/CS error map that drives MRNF growth reads JPEG noise and
+   chroma-subsampling artefacts as structure — the heavier refine-weight tail above. The −4 EV frame is 92 %
+   unclipped but its mid-tones sit at low codes where the LUT slope is smallest and the noise largest; it is the
+   EV that loses least, so the gate/noise floor is handled, but the whole model inherits the noisier supervision.
+3. *The 3 % darkness.* Unexplained; too small to be the gap (≈ 0.3–0.5 dB at mid-grey) and not a unit error (the
+   merge fits at 1.004 through the same LUT). Candidates in order: the one-sided high gate removes the brightest
+   third of the +0…+4 EV frames' pixels from the L1 median (a slight downward pull where the render sits just under a
+   clipped JPEG is NOT possible — those pixels push up — but a render just ABOVE one is freed, and nothing pulls it
+   back down), and the weak-slope low codes of the dark frames. Measurable by an ablation (`gate_high` = 1.0 →
+   bias check) that is tuning, not done here.
+
+What this means for the plan: the bracket path works end to end (units, EXIF anchor, gate, checkpoint, eval), its
+exposure model is sound, and it is behind the merge by ~1.7 dB at equal iterations on a synthetic set where the
+merge has NO ghosting to lose. The case for M3 was ghosting (real hand-held captures); on this tripod set the merge
+is the better teacher. Owed, in order: the 14 000-iteration result; a `hat`-weighted loss (Debevec's w(z) as a
+per-pixel `roi_weight`, which the loss already accepts) to down-weight the noisy low codes and the near-clip
+band — the principled version of what the merge's weights do; `--hdr-crf ppisp` only if a real capture's Debevec
+curve is too noisy. LDR bit-identity: `ldr_reeval.py` on `baseline_a` with this binary — "metrics: identical",
+"eval PNGs: 16 compared, identical" (logged as M3 / m3_reeval).
+
+**Deviations from the design.** (1) `eval_split_mask` lives in a header (`eval_split.hpp`), not `training_setup.hpp`,
+so `dataset.hpp` and the test can include it without the trainer. (2) The Adam step and the dδ reduction stay on
+the GPU (no per-step host sync); δ is read back only for the diagnostics, the checkpoint and the tests. (3) The
+monotonic repair of g is one-ulp lifts in float32, not a 1e-12 ramp (which float32 cannot hold). (4) The gate's
+thresholds are compared in the GT's own units (codes for UInt8 GT) so 250 and 5 are exact. (5) The eval writes one
+EXR per position (frame f0), not five. (6) `hdr_exposure_prior|lr|max_delta` are validated unconditionally (also
+without `hdr_brackets`). (7) `test_by_position` is not forced by `--hdr-brackets`: a bracket set with the default
+per-image split would still train — `bracket_eval.py` would then find frames of a position on both sides; the run
+scripts in §6 pass the flag.
+
+**Tests.** `lichtfeld_tests` filter `EvalSplitTest.*:HdrBracketStageTest.*:TrainingParametersTest.*:
+CheckpointVersionTest.*:HdrColorChainTest.*`: 58 passed (build/tests of this worktree). ctest names
+`lichtfeld.hdr_eval_split`, `lichtfeld.hdr_bracket_stage`.
+
 ---
 
 ## M4 — Viewer tone mapping (Vulkan)

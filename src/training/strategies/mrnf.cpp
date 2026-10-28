@@ -24,6 +24,7 @@
 #include "strategy_utils.hpp"
 #include "training/dataset.hpp"
 #include <algorithm>
+#include <cstdlib>
 #include <cassert>
 #include <chrono>
 #include <cmath>
@@ -1834,6 +1835,32 @@ namespace lfs::training {
     lfs::core::Tensor MRNF::compute_refine_candidates() const {
         using namespace lfs::core;
         auto candidate_weights = apply_crop_damping_to_scores(*_optimizer, _refine_weight_max);
+        // HDR fork (PLAN.md M2 review, M3): LFS_REFINE_WEIGHT_HIST=1 logs the refine-weight distribution at every
+        // refine, so the LDR / HDR-EXR / bracket runs can be compared against growth_grad_threshold once.
+        static const bool log_hist = std::getenv("LFS_REFINE_WEIGHT_HIST") != nullptr;
+        if (log_hist && candidate_weights.numel() > 0) {
+            auto w = candidate_weights.cpu().to_vector();
+            std::vector<float> visible;
+            visible.reserve(w.size());
+            const auto vis = visibility_accumulator().cpu().to_vector();
+            for (size_t i = 0; i < w.size(); ++i)
+                if (i < vis.size() && vis[i] > 0.0f && std::isfinite(w[i]))
+                    visible.push_back(w[i]);
+            if (!visible.empty()) {
+                std::sort(visible.begin(), visible.end());
+                const auto pct = [&](const double q) {
+                    return visible[std::min(visible.size() - 1, static_cast<size_t>(q * static_cast<double>(visible.size())))];
+                };
+                const auto above = static_cast<size_t>(std::count_if(visible.begin(), visible.end(), [&](const float v) {
+                    return v > _params->growth_grad_threshold;
+                }));
+                LOG_INFO("refine_weight_max over {} visible splats: p50 {:.5f} p90 {:.5f} p99 {:.5f} max {:.5f}; "
+                         "{:.2f} % above growth_grad_threshold {}",
+                         visible.size(), pct(0.5), pct(0.9), pct(0.99), visible.back(),
+                         100.0 * static_cast<double>(above) / static_cast<double>(visible.size()),
+                         _params->growth_grad_threshold);
+            }
+        }
         return (candidate_weights > _params->growth_grad_threshold) &&
                (visibility_accumulator() > 0.0f);
     }
