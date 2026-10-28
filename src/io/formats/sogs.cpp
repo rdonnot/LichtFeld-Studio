@@ -24,6 +24,7 @@
 #include "cuda/morton_encoding.hpp"
 #include "formats/archive_member_names.hpp"
 #include "io/atomic_output.hpp"
+#include "io/hdr_export.hpp"
 #include "io/error.hpp"
 #include <algorithm>
 #include <archive.h>
@@ -2480,7 +2481,14 @@ namespace lfs::io {
         return std::make_unique<SogArchive>(path, store_every_member);
     }
 
-    Result<void> save_sog(const SplatData& data, const SogSaveOptions& options) {
+    Result<void> save_sog(const SplatData& data_in, const SogSaveOptions& options) {
+        // HDR models (PLAN.md M5): SOG quantises colour, so an HDR model is baked to LDR or refused.
+        std::optional<SplatData> hdr_baked;
+        const auto hdr_source = hdr_source_for_ldr_writer(data_in, options.hdr, hdr_baked, "SOG", options.output_path);
+        if (!hdr_source)
+            return std::unexpected(hdr_source.error());
+        const SplatData& data = **hdr_source;
+
         try {
             ScopedAtomicOutputFile output(options.output_path);
             SogArchive sink(output.temp_path());

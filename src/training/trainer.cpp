@@ -3048,6 +3048,23 @@ namespace lfs::training {
             // EXRs, measured once here and written back so the saved training config and a resume reuse it.
             // The colour cap is ABSOLUTE radiance; 0 means 1000 * s, resolved here and written back too so
             // the saved config, a resume and the PLY (M5) all carry the value the kernels used.
+            // An HDR PLY (lichtfeld_hdr header, M5) brings its own s and cap: when the CLI gave none, the
+            // file's values win over a fresh P99 measurement so the loss and the cap match the model.
+            if (params_.optimization.hdr) {
+                const lfs::core::SplatData* init_model =
+                    strategy_ ? &strategy_->get_model() : (scene_ ? scene_->getTrainingModel() : nullptr);
+                if (init_model && init_model->is_hdr()) {
+                    const auto& file_state = init_model->hdr();
+                    if (params_.optimization.hdr_scale <= 0.0f && file_state.scale > 0.0f) {
+                        params_.optimization.hdr_scale = file_state.scale;
+                        LOG_INFO("HDR: radiance scale s = {} taken from the initial model's hdr_scale", file_state.scale);
+                    }
+                    if (params_.optimization.hdr_color_max <= 0.0f && file_state.color_max > 0.0f) {
+                        params_.optimization.hdr_color_max = file_state.color_max;
+                        LOG_INFO("HDR: colour cap = {} taken from the initial model's hdr_color_max", file_state.color_max);
+                    }
+                }
+            }
             if (params_.optimization.hdr && params_.optimization.hdr_scale <= 0.0f) {
                 const auto scale = measure_hdr_scale(train_dataset_->get_cameras());
                 if (!scale)
@@ -3098,8 +3115,17 @@ namespace lfs::training {
             // proxies p in [0,1] (point cloud / random / PLY): p is inverted through the mu-law and scaled by
             // s, exactly like the MRNF blob seeds (mrnf.cpp) — a proxy white starts at the scene's P99
             // radiance. A resumed checkpoint already stores log values.
-            if (params_.optimization.hdr && current_iteration_ == 0)
+            // A model that already holds log radiance (an HDR PLY, M5) is never re-seeded.
+            if (params_.optimization.hdr && current_iteration_ == 0 && !splat.is_hdr())
                 init_log_radiance_sh0(splat, params_.optimization.hdr_scale, params_.optimization.hdr_mu);
+            else if (params_.optimization.hdr && current_iteration_ == 0)
+                LOG_INFO("HDR: the initial model already holds log radiance (s = {}, cap = {}); sh0 kept",
+                         splat.hdr().scale, splat.hdr().color_max);
+            if (!params_.optimization.hdr && splat.is_hdr())
+                return std::unexpected(
+                    "The initial model holds HDR log-radiance SH (a lichtfeld_hdr PLY) but --hdr is off: "
+                    "pass --hdr (its s and cap are taken from the file), or convert it first "
+                    "(LichtFeld-Studio convert in.ply out.ply --hdr-export baked --hdr-exposure 0)");
             // The model carries how its SH are to be read (log radiance, s, cap) for every consumer that is
             // not the trainer: the viewer, the exporters, the video render (SplatData::HdrState).
             if (params_.optimization.hdr)

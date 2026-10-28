@@ -1645,7 +1645,7 @@ namespace lfs::training {
             using lfs::core::param::OutputFormat;
             switch (format) {
             case OutputFormat::PLY:
-                return lfs::io::save_ply(splat, {.output_path = output, .binary = true, .provenance = provenance});
+                return lfs::io::save_ply(splat, {.output_path = output, .binary = true, .provenance = provenance, .hdr = params.hdr_export});
             case OutputFormat::SSOG:
                 return lfs::io::save_ssog(splat, {.output_path = output,
                                                   .lod_levels = params.lod_levels,
@@ -1654,13 +1654,14 @@ namespace lfs::training {
                                                   .chunk_extent = params.lod_chunk_extent,
                                                   .chunk_min_k = params.lod_chunk_min,
                                                   .kmeans_iterations = params.sog_iterations,
-                                                  .provenance = provenance});
+                                                  .provenance = provenance,
+                                                  .hdr = params.hdr_export});
             case OutputFormat::SOG:
-                return lfs::io::save_sog(splat, {.output_path = output, .kmeans_iterations = 10, .provenance = provenance});
+                return lfs::io::save_sog(splat, {.output_path = output, .kmeans_iterations = 10, .provenance = provenance, .hdr = params.hdr_export});
             case OutputFormat::SPZ:
-                return lfs::io::save_spz(splat, {.output_path = output, .version = 4, .provenance = provenance});
+                return lfs::io::save_spz(splat, {.output_path = output, .version = 4, .provenance = provenance, .hdr = params.hdr_export});
             case OutputFormat::GLB:
-                return lfs::io::save_spz(splat, {.output_path = output, .provenance = provenance, .glb = true});
+                return lfs::io::save_spz(splat, {.output_path = output, .provenance = provenance, .glb = true, .hdr = params.hdr_export});
             case OutputFormat::HTML: {
                 std::optional<glm::vec3> bg_color;
                 if (params.optimization.bg_mode == lfs::core::param::BackgroundMode::SolidColor) {
@@ -1670,16 +1671,17 @@ namespace lfs::training {
                 return lfs::io::export_html(splat, {.output_path = output,
                                                     .kmeans_iterations = 10,
                                                     .provenance = provenance,
-                                                    .background_color = bg_color});
+                                                    .background_color = bg_color,
+                                                    .hdr = params.hdr_export});
             }
             case OutputFormat::USD:
             case OutputFormat::USDA:
             case OutputFormat::USDC:
-                return lfs::io::save_usd(splat, {.output_path = output, .provenance = provenance});
+                return lfs::io::save_usd(splat, {.output_path = output, .provenance = provenance, .hdr = params.hdr_export});
             case OutputFormat::RAD:
-                return lfs::io::save_rad(splat, {.output_path = output, .provenance = provenance});
+                return lfs::io::save_rad(splat, {.output_path = output, .provenance = provenance, .hdr = params.hdr_export});
             }
-            return lfs::io::save_ply(splat, {.output_path = output, .binary = true, .provenance = provenance});
+            return lfs::io::save_ply(splat, {.output_path = output, .binary = true, .provenance = provenance, .hdr = params.hdr_export});
         }
     } // namespace
 

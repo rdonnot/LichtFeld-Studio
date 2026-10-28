@@ -14,6 +14,7 @@
 #include "formats/usd_flat/usda_write.hpp"
 #include "formats/usd_flat/usdz.hpp"
 #include "io/atomic_output.hpp"
+#include "io/hdr_export.hpp"
 #include "io/exporter.hpp"
 #include <algorithm>
 #include <array>
@@ -499,8 +500,15 @@ namespace lfs::io {
         return {};
     }
 
-    Result<void> save_usd(const SplatData& splat_data, const UsdSaveOptions& options_in) {
+    Result<void> save_usd(const SplatData& splat_data_in, const UsdSaveOptions& options_in) {
         UsdSaveOptions options = options_in;
+
+        // HDR models (PLAN.md M5): USD quantises colour, so an HDR model is baked to LDR or refused.
+        std::optional<SplatData> hdr_baked;
+        const auto hdr_source = hdr_source_for_ldr_writer(splat_data_in, options.hdr, hdr_baked, "USD", options.output_path);
+        if (!hdr_source)
+            return std::unexpected(hdr_source.error());
+        const SplatData& splat_data = **hdr_source;
         if (!options.provenance)
             options.provenance = core::make_minimal_provenance_stamp();
         if (!report_export_progress(options.progress_callback, 0.0f, "Preparing USD"))

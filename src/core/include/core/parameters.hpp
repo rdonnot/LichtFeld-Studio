@@ -5,6 +5,7 @@
 #pragma once
 
 #include "core/error.hpp"
+#include "core/hdr_export_options.hpp"
 #include "core/export.hpp"
 #include "core/mesh2splat.hpp"
 #include "core/path_utils.hpp"
@@ -543,6 +544,11 @@ namespace lfs::core {
             int fps = 30;
             int crf = 18;
             bool include_provenance = true; // always written to the format's metadata slot; caller chooses full vs minimal, writers fall back to minimal
+            // HDR scenes (docs/hdr.md): the video is tone-mapped at exposure_ev (EV relative to 1/s) with `tone`
+            // (display_color.inc index); exr_dir, when set, receives every frame as a linear EXR as well.
+            float exposure_ev = 0.0f;
+            int tone = 4; // aces
+            std::filesystem::path exr_dir;
         };
 
         struct TrainingParameters;
@@ -636,6 +642,9 @@ namespace lfs::core {
             // Additional final-splat exports written next to project.licht after
             // training completes. Empty = only the .licht project is written.
             std::vector<OutputFormat> export_formats;
+            // --hdr-export / --hdr-exposure / --hdr-tonemap: how an HDR model's --export files are written
+            // (PLY: linear radiance by default; other formats need `baked`). docs/hdr.md.
+            hdr::ExportOptions hdr_export{};
             int sog_iterations = 10;
             int lod_levels = 4;
             float lod_ratio = 0.5f;
@@ -719,6 +728,7 @@ namespace lfs::core {
             RadExportMode rad_export_mode = RadExportMode::Stream;
             bool overwrite = false;         // Skip overwrite prompts
             bool include_provenance = true; // always written to the format's metadata slot; caller chooses full vs minimal, writers fall back to minimal
+            hdr::ExportOptions hdr_export{}; // --hdr-export / --hdr-exposure / --hdr-tonemap (docs/hdr.md)
         };
 
         // Parameters for the mesh2splat command

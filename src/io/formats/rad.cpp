@@ -7,6 +7,7 @@
 #include "rad_dequant_math.hpp"
 
 #include "io/cuda/rad_encode_quant.hpp"
+#include "io/hdr_export.hpp"
 
 #include "core/bhatt_lod.hpp"
 #include "core/logger.hpp"
@@ -4539,8 +4540,15 @@ namespace lfs::io {
         return sliced;
     }
 
-    Result<void> save_rad(const SplatData& splat_data, const RadSaveOptions& options_in) {
+    Result<void> save_rad(const SplatData& splat_data_in, const RadSaveOptions& options_in) {
         RadSaveOptions options = options_in;
+
+        // HDR models (PLAN.md M5): RAD quantises colour, so an HDR model is baked to LDR or refused.
+        std::optional<SplatData> hdr_baked;
+        const auto hdr_source = hdr_source_for_ldr_writer(splat_data_in, options.hdr, hdr_baked, "RAD", options.output_path);
+        if (!hdr_source)
+            return std::unexpected(hdr_source.error());
+        const SplatData& splat_data = **hdr_source;
         if (!options.provenance) {
             options.provenance = core::make_minimal_provenance_stamp();
         }

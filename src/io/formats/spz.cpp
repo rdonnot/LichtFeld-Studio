@@ -12,8 +12,10 @@
 #include "core/splat_data_transform.hpp"
 #include "core/tensor.hpp"
 #include "io/atomic_output.hpp"
+#include "io/hdr_export.hpp"
 #include "load-spz.h"
 #include "provenance-lichtfeld.h"
+#include <optional>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -735,8 +737,15 @@ namespace lfs::io {
         }
     }
 
-    Result<void> save_spz(const SplatData& splat_data, const SpzSaveOptions& options_in) {
+    Result<void> save_spz(const SplatData& splat_data_in, const SpzSaveOptions& options_in) {
         SpzSaveOptions options = options_in;
+
+        // HDR models (PLAN.md M5): SPZ quantises colour, so an HDR model is baked to LDR or refused.
+        std::optional<SplatData> hdr_baked;
+        const auto hdr_source = hdr_source_for_ldr_writer(splat_data_in, options.hdr, hdr_baked, "SPZ", options.output_path);
+        if (!hdr_source)
+            return std::unexpected(hdr_source.error());
+        const SplatData& splat_data = **hdr_source;
         if (options.glb) {
             options.version = 3; // KHR_gaussian_splatting_compression_spz_2 readers expect gzip SPZ
         }
