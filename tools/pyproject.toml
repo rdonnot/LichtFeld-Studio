@@ -5,6 +5,7 @@ description = "HDR fork tooling: evaluation metrics, synthetic bracket data, dat
 requires-python = ">=3.11"
 dependencies = [
     "numpy>=2.0",
+    "opencolorio>=2.6.0",
     "opencv-python-headless>=4.10",
     "openexr>=3.3",
     "pillow>=10.0",

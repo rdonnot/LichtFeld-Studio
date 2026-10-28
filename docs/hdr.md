@@ -107,6 +107,96 @@ unless `baked` is asked for, in which case the same bake runs first (`lfs::io::h
   `.hdr_color_max`, `.bake_hdr_to_ldr(exposure_ev, tonemap)`; `lf.export_scene(..., hdr=, hdr_exposure_ev=,
   hdr_tonemap=)`.
 
+## Colour management (OpenColorIO)
+
+"The HDR Gaussian has to be compatible with OCIO." It is, in three places: the files say which colorspace
+their radiance is in, the viewer can show an HDR model through any OCIO display/view, and every bake to 8 bits
+can run the same transform. OpenColorIO 2 is linked into `lfs_core` (BSD-3; `src/core/ocio.cpp` is the only
+file that includes it) and needs no config file: the default is `$OCIO`, else the built-in ACES studio config
+(`ocio://studio-config-latest`); `--ocio <file>` points at a studio's own (Houdini 22 ships three under
+`/opt/hfs22.0/packages/ocio/`).
+
+### The working space is `lin_srgb`
+
+Inside LichtFeld an HDR model's radiance is **always** scene-linear with **Rec.709 / sRGB primaries and a D65
+white** — OCIO's `Linear Rec.709 (sRGB)`, alias `lin_srgb` in the ACES configs, `scene_linear` role in most
+others. That is what the synthetic data is, what a Debevec merge of sRGB JPEGs produces, and what the training
+loss compares, so it is an invariant, not a setting: the `.licht` project stores nothing about it. Files
+declare it for other readers:
+
+| file | declaration |
+|---|---|
+| HDR PLY (`linear` and `log`) | `comment lichtfeld_colorspace lin_srgb` next to the `lichtfeld_hdr` comments (LDR PLYs are untouched: their colour is display-referred) |
+| every EXR LichtFeld writes (`--eval`, `--render-exr-dir`, the brackets plugin's merge) | the standard `chromaticities` attribute (0.64/0.33, 0.30/0.60, 0.15/0.06, D65 0.3127/0.3290) **and** a string attribute `lichtfeld_colorspace = lin_srgb` |
+
+**Reading a foreign declaration.** A PLY or EXR whose `lichtfeld_colorspace` names another colorspace of the
+current config is converted on load *when that colorspace is linear* (OCIO's processor from it to `lin_srgb`
+is probed on the basis vectors at two scales; the 3×3 is applied to every SH coefficient — `f_dc` through the
+0.5 offset of the PLY convention, every `f_rest` directly — before the log projection, or per pixel for an
+EXR). A non-linear declaration (ACEScct, sRGB-encoded, …), an unknown name, or a tag on a `lichtfeld_hdr log`
+file is **refused** with the reason, never read as if it were `lin_srgb`. No tag = `lin_srgb`.
+
+**What to assign in another application.** A LichtFeld HDR PLY or EXR is `Linear Rec.709 (sRGB)` in the
+ACES 1.3 / 2.0 configs (`lin_srgb`), `scene_linear` / `linear` in a legacy config:
+
+- *Houdini* (OCIO on, Karma / Solaris): set the file's colorspace to **Linear Rec.709 (sRGB)** when importing
+  the EXR as a texture or the PLY's colour attribute; Houdini's own default config is the same ACES CG config,
+  so an EXR with these chromaticities is picked up as linear Rec.709 automatically.
+- *Nuke*: Read node **colorspace = Linear Rec.709 (sRGB)** (ACES configs) or `linear` (nuke-default); the
+  `chromaticities` attribute does not drive Nuke's input transform, the Read node does.
+- *DaVinci Resolve* (ACES or RCM): EXR input colour space **Linear**, gamut **Rec.709** (in ACES: "Linear
+  Rec.709 (sRGB)" / "ACES → sRGB linear" IDT); in a Rec.709 timeline the ODT does the tone mapping.
+- Anything that reads `hdr_display_exposure` (docs above): multiply by it to put the scene's P99 white at 1.0
+  before the view transform.
+
+### Display: tone mapping "OCIO" in the viewer
+
+With an HDR model loaded, **Tone mapping → OCIO** in the rendering panel (Color & Appearance) replaces the
+built-in curve by an OCIO **display / view / look** (three selects, filled from the current config; "Default"
+= the config's own default display / view). The chain is
+
+    radiance / s · 2^EV  (linear, the EV slider)  →  [look]  →  display/view transform  →  RGBA8
+
+i.e. the exposure is applied in scene-linear light **before** the view transform, as OCIO expects. The
+transform is baked once per selection into a **65³ float LUT over a per-channel log2 shaper** (−14 … +8
+stops of normalised radiance; node 0 is exactly black) by `core::ocio::lut_for`, uploaded to the compose
+pass as a storage buffer and sampled with trilinear interpolation (`display_color.inc` `lfsOcioLut`). Measured
+against OCIO's own CPU processor on 20 000 log-uniform radiances (−12 … +10 stops, random chroma): 68 dB on
+"ACES 2.0 - SDR 100 nits (Rec.709)", 71 dB "Un-tone-mapped", 60 dB "Raw" (unbounded, clipped at 1), 70 dB
+on the PQ 1000-nit view — the test floor is 45 dB and ≤ 2/255 max error
+(`tests/test_hdr_display_chain.cpp`, `HdrDisplayChainTest.Ocio*`). Settings: `color_tonemapping = "ocio"`,
+`ocio_display`, `ocio_view`, `ocio_look` (Python `lf.get_render_settings()`, persisted with the session).
+
+Notes: the viewer's output is RGBA8, so an HDR view (PQ, HLG) is shown clipped — the maths is right, the
+swapchain is not HDR yet; "Raw" and "Un-tone-mapped" are not display encodings (linear, resp. sRGB-encoded
+linear without a tone curve) and clip at 1.0 as they would anywhere; the standard-portal profile displays per
+splat in the projection shader where no LUT exists and falls back to ACES with one warning; LDR models never
+see tone 7.
+
+### Bake: `--hdr-tonemap ocio` and `--render-tonemap ocio`
+
+The same LUT, sampled by the same text in the CUDA kernel (`core/hdr_sh.cu`), drives every 8-bit bake:
+
+    --hdr-export baked --hdr-tonemap ocio --ocio <config> --ocio-display "sRGB - Display" \
+        --ocio-view "ACES 2.0 - SDR 100 nits (Rec.709)" [--ocio-look <look>] [--hdr-exposure <EV>]
+    --render-camera-path … --render-tonemap ocio [--ocio* …]        # the video; --render-exr-dir stays linear
+    lf.io.save_ply(..., hdr="baked", tonemap="ocio"); SplatData.bake_hdr_to_ldr(ev, "ocio")
+
+`core::hdr::bake_hdr_to_ldr(splat, ev, ToneOperator::Ocio, selection)` and `display_image(..., Ocio,
+selection)` take an explicit `ocio::Selection{config, display, view, look}`; **empty fields mean the
+process-wide default** `core::ocio::current()`, which the `--ocio*` flags, the viewer (whenever it shows tone
+"OCIO": what you see is what an export from that session bakes) and Python `lf.io.set_ocio(config=, display=,
+view=, look=)` write. The CLI validates names before anything runs and lists the valid ones on a mistake.
+`tests/test_hdr_display_chain.cpp` pins the CUDA bake to the C++ twin pixel for pixel on a sweep, and
+`tools/eval/ocio_check.py` renders a real model headless and compares the video frame with the same EXR pushed
+through PyOpenColorIO (expect ≥ 40 dB; the codec is the floor).
+
+Python: `lf.io.ocio_available()`, `ocio_config_name()`, `ocio_working_space()`, `ocio_displays()`,
+`ocio_views(display)`, `ocio_looks()`, `get_ocio()`, `set_ocio(...)`.
+
+Trap: the app's OCIO (vcpkg 2.5.1) and PyOpenColorIO 2.6 ship *different versions* of the built-in configs
+(`studio-config-v4` vs `v5`), so a cross-check between the two must use a config **file**, not `ocio://…`.
+
 ## Tools
 
 `tools/eval/hdr_ply.py` reads any of these files with numpy: `info`, `stamp` (add the comments to an M2-era
