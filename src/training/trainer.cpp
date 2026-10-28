@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "trainer.hpp"
+#include "eval_split.hpp"
 #include "backward.h" // BWD-A T_eff hist arm/flush
 #include "components/bilateral_grid.hpp"
 #include "components/holdout_appearance.hpp"
@@ -97,6 +98,7 @@
 #include <format>
 #include <future>
 #include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <numeric>
@@ -2860,6 +2862,156 @@ namespace lfs::training {
         return s;
     }
 
+    // HDR from brackets (PLAN.md M3): the Debevec CRF of --hdr-crf and each frame's EXIF gain
+    // b = exif_ev - exif_ev_ref, read from the JPEG itself (core/exif.cpp). No fallback: a frame without EXIF has
+    // no gain, and the whole point of the units is that the EXIF is their anchor.
+    std::expected<void, std::string> Trainer::initialize_hdr_bracket_stage(
+        const std::vector<std::shared_ptr<lfs::core::Camera>>& cameras) {
+        auto crf = HdrBracketCrf::load(params_.optimization.hdr_crf);
+        if (!crf)
+            return std::unexpected("HDR brackets: " + crf.error());
+        HdrBracketStage::Config config;
+        config.learn = params_.optimization.hdr_exposure == lfs::core::param::HdrExposureMode::Learn;
+        config.lr = params_.optimization.hdr_exposure_lr;
+        config.prior = params_.optimization.hdr_exposure_prior;
+        config.max_delta = params_.optimization.hdr_exposure_max_delta;
+        auto stage = std::make_unique<HdrBracketStage>(*crf, config);
+
+        std::vector<std::filesystem::path> paths;
+        paths.reserve(cameras.size());
+        for (const auto& cam : cameras)
+            paths.push_back(cam->image_path());
+        const auto evs = lfs::core::exif_exposure_ev_for_training_images(paths, params_.dataset.data_path);
+        std::vector<std::string> missing;
+        double ev_min = std::numeric_limits<double>::infinity(), ev_max = -ev_min;
+        for (size_t i = 0; i < cameras.size(); ++i) {
+            if (!evs[i]) {
+                if (missing.size() < 5)
+                    missing.push_back(cameras[i]->image_name());
+                continue;
+            }
+            ev_min = std::min(ev_min, *evs[i]);
+            ev_max = std::max(ev_max, *evs[i]);
+            stage->register_frame(cameras[i]->uid(), static_cast<float>(*evs[i] - crf->exif_ev_ref));
+        }
+        if (!missing.empty())
+            return std::unexpected(std::format(
+                "HDR brackets: {} of {} frames carry no EXIF exposure (ExposureTime/FNumber/ISO), e.g. {}; every "
+                "frame needs one, it is the frame's exposure gain",
+                cameras.size() - static_cast<size_t>(stage->num_frames()), cameras.size(), missing.front()));
+        stage->finalize();
+        LOG_INFO("HDR brackets: CRF '{}' (exif_ev_ref {:.4f}), {} frames, EXIF EV {:.2f}..{:.2f} -> log2 gain "
+                 "{:.2f}..{:.2f}, exposure {} (lr {:.1e}, prior {}, |delta| <= {} stops)",
+                 crf->source, crf->exif_ev_ref, stage->num_frames(), ev_min, ev_max,
+                 ev_min - crf->exif_ev_ref, ev_max - crf->exif_ev_ref, config.learn ? "learn" : "exif (frozen)",
+                 config.lr, config.prior, config.max_delta);
+        hdr_bracket_stage_ = std::move(stage);
+        return {};
+    }
+
+    // HDR from brackets (design §2): s = P99 luminance of E = exp(g_c[z]) / 2^b over the pixels with 5 < z < 250 in
+    // all channels of a few positions' whole brackets. The merge's P99 is the same statistic plus the lower-bound
+    // pixels, so s should land within 25 % of the merged EXRs' (2421 on smoke_hdr). Also the per-EV gate fractions.
+    std::expected<float, std::string> Trainer::measure_hdr_scale_brackets(
+        const std::vector<std::shared_ptr<lfs::core::Camera>>& cameras, const HdrBracketStage& stage) {
+        if (cameras.empty())
+            return std::unexpected("HDR brackets: no training image to measure the radiance scale from");
+        // Up to 4 positions spread across the (name-sorted) set, every frame of each.
+        std::vector<std::string> position_order;
+        std::unordered_map<std::string, std::vector<std::shared_ptr<lfs::core::Camera>>> by_position;
+        auto sorted = cameras;
+        std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a->image_name() < b->image_name(); });
+        for (const auto& cam : sorted) {
+            const std::string key(position_key(cam->image_name()));
+            if (!by_position.contains(key))
+                position_order.push_back(key);
+            by_position[key].push_back(cam);
+        }
+        constexpr size_t kMaxPositions = 4;
+        const size_t stride = std::max<size_t>(1, position_order.size() / kMaxPositions);
+        std::vector<std::shared_ptr<lfs::core::Camera>> sample;
+        for (size_t i = 0; i < position_order.size() && sample.size() < 32; i += stride)
+            for (const auto& cam : by_position[position_order[i]])
+                sample.push_back(cam);
+
+        const auto& crf = stage.crf();
+        std::array<std::array<double, 256>, 3> exposure{};
+        for (int c = 0; c < 3; ++c)
+            for (int z = 0; z < 256; ++z)
+                exposure[static_cast<size_t>(c)][static_cast<size_t>(z)] = crf.exposure_of_code(c, z);
+
+        struct GateCount {
+            size_t high = 0, low = 0, total = 0;
+        };
+        std::map<int, GateCount> gate_by_ev; // key: round(b * 100)
+        std::vector<float> luminance;
+        for (const auto& cam : sample) {
+            auto [data, width, height, channels] = lfs::core::load_image(cam->image_path());
+            if (!data || width <= 0 || height <= 0 || channels < 3) {
+                if (data)
+                    lfs::core::free_image(data);
+                return std::unexpected(std::format("HDR brackets: cannot decode '{}' as an 8-bit RGB image",
+                                                   lfs::core::path_to_utf8(cam->image_path())));
+            }
+            const float b = stage.b(cam->uid());
+            const double inv_gain = std::exp2(-static_cast<double>(b));
+            auto& gate = gate_by_ev[static_cast<int>(std::lround(b * 100.0f))];
+            const size_t pixels = static_cast<size_t>(width) * static_cast<size_t>(height);
+            const size_t step = std::max<size_t>(1, pixels / 1'000'000);
+            for (size_t p = 0; p < pixels; p += step) {
+                const unsigned char* px = data + p * static_cast<size_t>(channels);
+                gate.total += 3;
+                for (int c = 0; c < 3; ++c) {
+                    gate.high += px[c] >= 250;
+                    gate.low += px[c] <= 5;
+                }
+                if (px[0] > 5 && px[0] < 250 && px[1] > 5 && px[1] < 250 && px[2] > 5 && px[2] < 250) {
+                    const double r = exposure[0][px[0]] * inv_gain;
+                    const double g = exposure[1][px[1]] * inv_gain;
+                    const double bl = exposure[2][px[2]] * inv_gain;
+                    const double y = 0.2126 * r + 0.7152 * g + 0.0722 * bl;
+                    if (std::isfinite(y) && y > 0.0)
+                        luminance.push_back(static_cast<float>(y));
+                }
+            }
+            lfs::core::free_image(data);
+        }
+        for (const auto& [key, count] : gate_by_ev) {
+            if (count.total == 0)
+                continue;
+            LOG_INFO("HDR brackets: log2 gain {:+.2f} ({} frames sampled): gate high (>= 250) {:.1f} %, low (<= 5) {:.1f} % of channel samples",
+                     key / 100.0, std::count_if(sample.begin(), sample.end(), [&](const auto& cam) {
+                         return static_cast<int>(std::lround(stage.b(cam->uid()) * 100.0f)) == key;
+                     }),
+                     100.0 * static_cast<double>(count.high) / static_cast<double>(count.total),
+                     100.0 * static_cast<double>(count.low) / static_cast<double>(count.total));
+        }
+        if (luminance.empty())
+            return std::unexpected("HDR brackets: no unsaturated pixel in the sampled JPEGs");
+        const size_t k = std::min(luminance.size() - 1, static_cast<size_t>(0.99 * static_cast<double>(luminance.size())));
+        std::nth_element(luminance.begin(), luminance.begin() + static_cast<std::ptrdiff_t>(k), luminance.end());
+        const float s = luminance[k];
+        if (!(s > 0.0f) || !std::isfinite(s))
+            return std::unexpected(std::format("HDR brackets: degenerate radiance scale {}", s));
+        LOG_INFO("HDR brackets: s measured on {} JPEGs of {} positions ({} unsaturated samples)",
+                 sample.size(), std::min(position_order.size(), (position_order.size() + stride - 1) / stride), luminance.size());
+        return s;
+    }
+
+    void Trainer::log_hdr_bracket_diagnostics() const {
+        if (!hdr_bracket_stage_)
+            return;
+        const auto d = hdr_bracket_stage_->diagnostics();
+        if (!hdr_bracket_stage_->learns()) {
+            LOG_INFO("HDR brackets: exposure frozen at the EXIF gains ({} frames)", d.frames);
+            return;
+        }
+        LOG_INFO("HDR brackets: exposure delta over {} frames: mean {:+.4f} stop, mean |delta| {:.4f}, max |delta| {:.4f}"
+                 "{}",
+                 d.frames, d.mean_delta, d.mean_abs_delta, d.max_abs_delta,
+                 std::abs(d.mean_delta) > 0.1f ? " — |mean| > 0.1 stop: the deltas drift together (design §8.3)" : "");
+    }
+
     // HDR: sh0 proxies p in [0,1] -> log radiance, absolute. The proxy is display-referred, so p is read as
     // the loss domain's mu-law value and inverted the way the MRNF blob seeds are (mrnf.cpp):
     // x = expm1(p ln(1+mu)) / mu, radiance = x * s, sh0 = (ln max(radiance, 1e-3) - 0.5) / SH_C0. A plain
@@ -2939,6 +3091,12 @@ namespace lfs::training {
             dataset_config.resize_factor = params.dataset.resize_factor;
             dataset_config.max_width = params.dataset.max_width;
             dataset_config.test_every = params.dataset.test_every;
+            dataset_config.test_by_position = holds_out_by_position(params);
+            if (params.optimization.hdr_brackets && !params.dataset.test_by_position && params.dataset.test_every > 1 &&
+                params.optimization.holds_out_eval_images())
+                LOG_INFO("HDR brackets: holding out by POSITION (every {}th position with all its frames) — a single "
+                         "held-out frame would leak its pose through the sibling frames; --test-by-position implied",
+                         params.dataset.test_every);
 
             // Get enabled cameras with images from the scene
             std::vector<std::shared_ptr<lfs::core::Camera>> source_cameras;
@@ -2963,6 +3121,7 @@ namespace lfs::training {
                                                     return camera->split() == lfs::core::CameraSplit::Eval;
                                                 });
                 if (params.overrides.has_dataset_key("test_every") ||
+                    params.overrides.has_dataset_key("test_by_position") ||
                     (!keep_project_split &&
                      (params.overrides.has_optimization_key("enable_eval") ||
                       params.overrides.has_optimization_key("eval_all")))) {
@@ -2976,10 +3135,9 @@ namespace lfs::training {
                             return lhs->uid() < rhs->uid();
                         });
                     const int test_every = std::max(1, params.dataset.test_every);
+                    const auto held_out = eval_split_mask(source_cameras, test_every, holds_out_by_position(params));
                     for (size_t i = 0; i < source_cameras.size(); ++i) {
-                        const bool is_val =
-                            hold_out &&
-                            (i % static_cast<size_t>(test_every)) == 0;
+                        const bool is_val = hold_out && held_out[i];
                         source_cameras[i]->set_split(
                             is_val ? lfs::core::CameraSplit::Eval
                                    : lfs::core::CameraSplit::Train);
@@ -3075,7 +3233,20 @@ namespace lfs::training {
                     }
                 }
             }
-            if (params_.optimization.hdr && params_.optimization.hdr_scale <= 0.0f) {
+            if (params_.optimization.hdr_brackets) {
+                // Every frame (training and held-out) gets its EXIF gain; the loss and the eval both need it.
+                if (auto stage = initialize_hdr_bracket_stage(source_cameras); !stage)
+                    return std::unexpected(stage.error());
+            }
+            if (params_.optimization.hdr_brackets && params_.optimization.hdr_scale <= 0.0f) {
+                const auto scale = measure_hdr_scale_brackets(train_dataset_->get_cameras(), *hdr_bracket_stage_);
+                if (!scale)
+                    return std::unexpected(scale.error());
+                params_.optimization.hdr_scale = *scale;
+                LOG_INFO("HDR brackets: radiance scale s = {} (P99 luminance of the training JPEGs through the LUT "
+                         "at their EXIF gains); mu = {} (eval only)",
+                         *scale, params_.optimization.hdr_mu);
+            } else if (params_.optimization.hdr && params_.optimization.hdr_scale <= 0.0f) {
                 const auto scale = measure_hdr_scale(train_dataset_->get_cameras());
                 if (!scale)
                     return std::unexpected(scale.error());
@@ -3299,6 +3470,13 @@ namespace lfs::training {
             if (params_.optimization.ppisp_active() && ppisp_ && ppisp_->isFinalized()) {
                 evaluator_->set_appearance([this](const lfs::core::Tensor& rgb, const lfs::core::Camera& cam) {
                     return applyPPISPForEval(rgb, cam);
+                });
+            }
+            if (params_.optimization.hdr_brackets && hdr_bracket_stage_) {
+                // Held-out frames are rendered at their EXIF exposure (delta = 0) through the Debevec LUT; the
+                // evaluator scores that LDR prediction against the JPEG (metrics.cpp, bracket branch).
+                evaluator_->set_appearance([this](const lfs::core::Tensor& rgb, const lfs::core::Camera& cam) {
+                    return hdr_bracket_stage_->apply_eval(rgb, cam.uid());
                 });
             }
             LOG_DEBUG("Metrics evaluator initialized");
@@ -4207,6 +4385,7 @@ namespace lfs::training {
                     current_iteration_.load()),
             .popspa_controller = popspa_controller_.is_initialized() ? &popspa_controller_ : nullptr,
             .popspa_optimizer = popspa_controller_.is_initialized() ? popspa_optimizer_.get() : nullptr,
+            .hdr_bracket_stage = hdr_bracket_stage_.get(),
             .mutating_streams = mutating_streams,
         };
         return project_snapshot_service_->initialize(
@@ -4525,6 +4704,7 @@ namespace lfs::training {
                     capture_iteration),
             .popspa_controller = popspa_controller_.is_initialized() ? &popspa_controller_ : nullptr,
             .popspa_optimizer = popspa_controller_.is_initialized() ? popspa_optimizer_.get() : nullptr,
+            .hdr_bracket_stage = hdr_bracket_stage_.get(),
             .mutating_streams = mutating_streams,
         };
         auto prepared =
@@ -4767,6 +4947,7 @@ namespace lfs::training {
                 controller_pool_for_save(iteration),
             .popspa_controller = popspa_controller_.is_initialized() ? &popspa_controller_ : nullptr,
             .popspa_optimizer = popspa_controller_.is_initialized() ? popspa_optimizer_.get() : nullptr,
+            .hdr_bracket_stage = hdr_bracket_stage_.get(),
             .mutating_streams = mutating_streams,
             .capture_additional_cpu_state =
                 [this, cpu_state, chapters,
@@ -6424,8 +6605,9 @@ namespace lfs::training {
                     gt_composited = true;
                 }
                 // HDR: every consumer of the target (loss, edge map, thin-structure map, error map, blob
-                // seeding) reads the mu-law image of the P99-normalised linear radiance.
-                if (step_params.hdr) {
+                // seeding) reads the mu-law image of the P99-normalised linear radiance. Bracket mode keeps the
+                // 8-bit JPEG as the target: the loss lives in the LDR domain (the render goes through the stage).
+                if (step_params.hdr && !step_params.hdr_brackets) {
                     gt_image = kernels::hdr_mulaw_forward(gt_image, step_params.hdr_scale, step_params.hdr_mu);
                     if (gt_composited) {
                         stable_gt = kernels::hdr_mulaw_forward(stable_gt, step_params.hdr_scale, step_params.hdr_mu);
@@ -7281,7 +7463,11 @@ namespace lfs::training {
                             // Final tonemapping: clamp to [0, 1] for loss computation.
                             // skip when PPISP is active — CRF already clamps.
                             // HDR: mu-law of the linear render instead (output.image stays linear).
-                            if (step_params.hdr) {
+                            if (step_params.hdr_brackets) {
+                                // HDR from brackets: exposure 2^(b+delta) -> Debevec LUT -> saturation gate; the
+                                // loss compares this LDR prediction with the JPEG (gt_image, [0,1] or 8-bit).
+                                corrected_image = hdr_bracket_stage_->apply(output.image, cam->uid(), gt_image);
+                            } else if (step_params.hdr) {
                                 corrected_image = kernels::hdr_mulaw_forward(
                                     output.image, step_params.hdr_scale, step_params.hdr_mu, &hdr_x_saved);
                             } else if (!ppisp_on) {
@@ -8037,7 +8223,10 @@ namespace lfs::training {
                         // consumed input keeps one fewer full-resolution image live per stage.
                         corrected_image = {};
                         lfs::core::Tensor raster_grad = tile_grad;
-                        if (step_params.hdr && hdr_x_saved.is_valid()) {
+                        if (step_params.hdr_brackets && hdr_bracket_stage_) {
+                            // dL/dz' -> dL/d(linear render); accumulates dL/ddelta for this frame.
+                            hdr_bracket_stage_->backward_in_place(raster_grad, cam->uid());
+                        } else if (step_params.hdr && hdr_x_saved.is_valid()) {
                             // dL/d(linear render) = dL/dy * dy/dv, zero below black.
                             kernels::hdr_mulaw_backward_(raster_grad, hdr_x_saved, step_params.hdr_scale,
                                                          step_params.hdr_mu);
@@ -8294,6 +8483,11 @@ namespace lfs::training {
 
                         nvtxRangePop();
                     }
+                    if (hdr_bracket_stage_ && step_params.hdr_brackets && hdr_bracket_stage_->learns() && !in_popspa) {
+                        // Adam on this frame's exposure delta with the prior toward the EXIF gain.
+                        hdr_bracket_stage_->step(cam->uid());
+                        persistent_commit = true;
+                    }
                 }
 
                 if (in_popspa) {
@@ -8547,6 +8741,7 @@ namespace lfs::training {
                     if (!defer_popspa_final_eval && evaluator_->is_enabled() && evaluator_->should_evaluate(iter, get_total_iterations())) {
                         lfs::diagnostics::VramProfiler::instance().mark("evaluation");
                         evaluator_->print_evaluation_header(iter);
+                        log_hdr_bracket_diagnostics();
                         eval_ppisp_applied_.store(0);
                         eval_ppisp_exif_.store(0);
                         eval_ppisp_nearest_.store(0);
@@ -8832,6 +9027,7 @@ namespace lfs::training {
 
     void Trainer::evaluate_at(const int iteration, std::stop_token stop_token) {
         evaluator_->print_evaluation_header(iteration);
+        log_hdr_bracket_diagnostics();
         lfs::diagnostics::VramProfiler::instance().mark("evaluation");
         eval_ppisp_applied_.store(0);
         eval_ppisp_exif_.store(0);
@@ -9017,9 +9213,10 @@ namespace lfs::training {
             pipelined_config.prefetch_count = 8;
             pipelined_config.output_queue_size = 4;
             pipelined_config.io_threads = 2;
-            pipelined_config.use_16bit_color = params_.dataset.loading_params.use_16bit_color ||
-                                               params_.optimization.hdr;
-            pipelined_config.hdr_linear = params_.optimization.hdr;
+            // HDR from EXRs decodes float; HDR from brackets trains on 8-bit JPEGs through the LDR decode path.
+            const bool hdr_float_input = params_.optimization.hdr && !params_.optimization.hdr_brackets;
+            pipelined_config.use_16bit_color = params_.dataset.loading_params.use_16bit_color || hdr_float_input;
+            pipelined_config.hdr_linear = hdr_float_input;
 
             // Non-JPEG images (PNG, WebP) need CPU decoding - use more threads until cache warms
             constexpr size_t MIN_COLD_THREADS = 4;
@@ -10156,7 +10353,8 @@ namespace lfs::training {
             ppisp_controller_pool_.get(),
             splat_tensor_allocator_, source_name, preloaded_model,
             restore_popspa ? &popspa_controller_ : nullptr,
-            restore_popspa ? popspa_optimizer_.get() : nullptr);
+            restore_popspa ? popspa_optimizer_.get() : nullptr,
+            hdr_bracket_stage_.get());
         if (!result) {
             return result;
         }

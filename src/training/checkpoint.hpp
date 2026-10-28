@@ -32,6 +32,7 @@ namespace lfs::training {
     class PPISPControllerPool;
     class POPSpaController;
     class AdamOptimizer;
+    class HdrBracketStage;
 
     struct CheckpointAppearance {
         std::unique_ptr<PPISP> ppisp;
@@ -62,7 +63,8 @@ namespace lfs::training {
         const PPISP* ppisp,
         const PPISPControllerPool* ppisp_controller_pool,
         const POPSpaController* popspa_controller = nullptr,
-        const AdamOptimizer* popspa_optimizer = nullptr);
+        const AdamOptimizer* popspa_optimizer = nullptr,
+        const HdrBracketStage* hdr_bracket_stage = nullptr);
 
     /// Import a standalone legacy checkpoint.
     std::expected<int, std::string> load_checkpoint(
@@ -74,7 +76,8 @@ namespace lfs::training {
         PPISPControllerPool* ppisp_controller_pool,
         lfs::core::SplatTensorAllocator tensor_allocator = {},
         POPSpaController* popspa_controller = nullptr,
-        AdamOptimizer* popspa_optimizer = nullptr);
+        AdamOptimizer* popspa_optimizer = nullptr,
+        HdrBracketStage* hdr_bracket_stage = nullptr);
     using CheckpointLoadResult = decltype(load_checkpoint(
         std::filesystem::path{},
         std::declval<IStrategy&>(),
@@ -102,6 +105,7 @@ namespace lfs::training {
         std::string_view source_name = "embedded CKPT",
         lfs::core::SplatData* preloaded_model = nullptr,
         POPSpaController* popspa_controller = nullptr,
-        AdamOptimizer* popspa_optimizer = nullptr);
+        AdamOptimizer* popspa_optimizer = nullptr,
+        HdrBracketStage* hdr_bracket_stage = nullptr);
 
 } // namespace lfs::training

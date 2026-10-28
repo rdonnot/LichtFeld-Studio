@@ -184,6 +184,8 @@ namespace lfs::core {
                     return error;
                 if (auto error = check("ppisp_sidecar_path", "string", [](const auto& value) { return value.is_string(); }))
                     return error;
+                if (auto error = check("hdr_crf", "string", [](const auto& value) { return value.is_string(); }))
+                    return error;
                 if (auto error = check("bg_image_path", "string", [](const auto& value) { return value.is_string(); }))
                     return error;
 
@@ -244,6 +246,8 @@ namespace lfs::core {
                 if (auto error = check("min_track_length", "integer", is_json_int32))
                     return error;
                 if (auto error = check("test_every", "integer", is_json_int32))
+                    return error;
+                if (auto error = check("test_by_position", "boolean", [](const auto& v) { return v.is_boolean(); }))
                     return error;
                 if (auto error = check("timelapse_images", "array of strings", [](const auto& v) { return v.is_array() && std::ranges::all_of(v, [](const auto& item) { return item.is_string(); }); }))
                     return error;
@@ -461,6 +465,8 @@ namespace lfs::core {
                     params.ppisp_sidecar_path =
                         utf8_to_path(json.at("ppisp_sidecar_path").get<std::string>());
                 }
+                if (json.contains("hdr_crf"))
+                    params.hdr_crf = utf8_to_path(json.at("hdr_crf").get<std::string>());
                 if (json.contains("bg_color") && json.at("bg_color").is_array() &&
                     json.at("bg_color").size() == 3) {
                     params.bg_color = {
@@ -501,6 +507,8 @@ namespace lfs::core {
                     dataset.min_track_length = j["min_track_length"].get<int>();
                 if (j.contains("test_every"))
                     dataset.test_every = j["test_every"].get<int>();
+                if (j.contains("test_by_position"))
+                    dataset.test_by_position = j["test_by_position"].get<bool>();
                 if (j.contains("timelapse_images"))
                     dataset.timelapse_images = j["timelapse_images"].get<std::vector<std::string>>();
                 if (j.contains("timelapse_every"))
@@ -817,6 +825,7 @@ namespace lfs::core {
             opt_json["save_steps"] = save_steps;
             opt_json["enable_save_eval_images"] = enable_save_eval_images;
             opt_json["ppisp_sidecar_path"] = path_to_utf8(ppisp_sidecar_path);
+            opt_json["hdr_crf"] = path_to_utf8(hdr_crf);
             opt_json["bg_color"] = {bg_color[0], bg_color[1], bg_color[2]};
             if (!bg_image_path.empty())
                 opt_json["bg_image_path"] = path_to_utf8(bg_image_path);
@@ -1047,6 +1056,17 @@ namespace lfs::core {
             if (hdr && hdr_color_max != 0.f && !(hdr_color_max > 1.f))
                 return std::format("hdr_color_max must be 0 (= 1000 * hdr_scale, resolved at load) or > 1 (got {})",
                                    hdr_color_max);
+            if (hdr_brackets && !hdr)
+                return "hdr_brackets requires hdr (on the command line --hdr-brackets implies --hdr)";
+            if (hdr_brackets && hdr_crf.empty())
+                return "bracket training needs --hdr-crf <crf.json>: the bracket set's crf.json "
+                       "(log_irradiance[3][256] and exif_ev_ref, written by the hdr_brackets plugin's M3 set)";
+            if (!std::isfinite(hdr_exposure_prior) || hdr_exposure_prior < 0.f)
+                return std::format("hdr_exposure_prior must be finite and >= 0 (got {})", hdr_exposure_prior);
+            if (!std::isfinite(hdr_exposure_lr) || hdr_exposure_lr <= 0.f)
+                return std::format("hdr_exposure_lr must be positive (got {})", hdr_exposure_lr);
+            if (!std::isfinite(hdr_exposure_max_delta) || hdr_exposure_max_delta <= 0.f)
+                return std::format("hdr_exposure_max_delta must be positive (got {})", hdr_exposure_max_delta);
             if (use_exposure_correction &&
                 (use_bilateral_grid || use_ppisp || ppisp_use_controller || ppisp_freeze_from_sidecar)) {
                 return "use_exposure_correction cannot be combined with use_bilateral_grid, "
@@ -1629,6 +1649,7 @@ namespace lfs::core {
             json["images"] = images;
             json["resize_factor"] = resize_factor;
             json["test_every"] = test_every;
+            json["test_by_position"] = test_by_position;
             json["timelapse_images"] = timelapse_images;
             json["timelapse_every"] = timelapse_every;
             json["max_width"] = max_width;
@@ -1655,6 +1676,8 @@ namespace lfs::core {
                 dataset.min_track_length = j["min_track_length"].get<int>();
             }
             dataset.test_every = j["test_every"].get<int>();
+            if (j.contains("test_by_position"))
+                dataset.test_by_position = j["test_by_position"].get<bool>();
             if (j.contains("timelapse_images")) {
                 dataset.timelapse_images =
                     j["timelapse_images"]

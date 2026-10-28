@@ -19,6 +19,7 @@
 #include "core/splat_data.hpp"
 #include "core/splat_data_transform.hpp"
 #include "dataset.hpp"
+#include "eval_split.hpp"
 #include "io/exporter.hpp"
 #include "io/loader.hpp"
 #include "io/project_document.hpp"
@@ -999,11 +1000,12 @@ namespace lfs::training {
                     });
                 }
 
+                const auto held_out = eval_split_mask(cameras, test_every, holds_out_by_position(params));
                 size_t train_count = 0;
                 size_t val_count = 0;
                 size_t mask_count = 0;
                 for (size_t i = 0; i < cameras.size(); ++i) {
-                    const bool is_eval = hold_out && (i % test_every) == 0;
+                    const bool is_eval = hold_out && held_out[i];
                     cameras[i]->set_split(is_eval ? lfs::core::CameraSplit::Eval : lfs::core::CameraSplit::Train);
                     if (is_eval) {
                         val_count++;
@@ -1023,7 +1025,7 @@ namespace lfs::training {
                     train_count);
 
                 for (size_t i = 0; i < cameras.size(); ++i) {
-                    if (!hold_out || (i % test_every) != 0) {
+                    if (!hold_out || !held_out[i]) {
                         scene.addCamera(cameras[i]->image_name(), train_cameras_id, cameras[i]);
                     }
                 }
@@ -1035,7 +1037,7 @@ namespace lfs::training {
                         val_count);
 
                     for (size_t i = 0; i < cameras.size(); ++i) {
-                        if ((i % test_every) == 0) {
+                        if (held_out[i]) {
                             scene.addCamera(cameras[i]->image_name(), val_cameras_id, cameras[i]);
                         }
                     }
@@ -1437,9 +1439,10 @@ namespace lfs::training {
                     });
                 }
 
+                const auto held_out = eval_split_mask(cameras, test_every, holds_out_by_position(params));
                 size_t train_count = 0, val_count = 0, mask_count = 0;
                 for (size_t i = 0; i < cameras.size(); ++i) {
-                    const bool is_val = hold_out && (i % test_every) == 0;
+                    const bool is_val = hold_out && held_out[i];
                     cameras[i]->set_split(is_val ? lfs::core::CameraSplit::Eval : lfs::core::CameraSplit::Train);
                     is_val ? ++val_count : ++train_count;
                     if (cameras[i]->has_mask())
@@ -1451,7 +1454,7 @@ namespace lfs::training {
                     "Training", cameras_group_id, train_count);
 
                 for (size_t i = 0; i < cameras.size(); ++i) {
-                    if (!hold_out || (i % test_every) != 0) {
+                    if (!hold_out || !held_out[i]) {
                         scene.addCamera(cameras[i]->image_name(), train_cameras_id, cameras[i]);
                     }
                 }
@@ -1460,7 +1463,7 @@ namespace lfs::training {
                     const auto val_cameras_id = scene.addCameraGroup(
                         "Validation", cameras_group_id, val_count);
                     for (size_t i = 0; i < cameras.size(); ++i) {
-                        if ((i % test_every) == 0) {
+                        if (held_out[i]) {
                             scene.addCamera(cameras[i]->image_name(), val_cameras_id, cameras[i]);
                         }
                     }

@@ -802,6 +802,8 @@ set(TEST_FILES
     test_hdr_color_chain.cpp
     hdr_color_chain_cuda.cu
     test_hdr_display_chain.cpp
+    test_eval_split.cpp
+    test_hdr_bracket_stage.cpp
     test_sh_swizzle_layout.cpp
     test_shn_bda_index_math.cpp
     test_python_io.cpp
@@ -1422,6 +1424,26 @@ add_test(NAME lichtfeld.hdr_display_chain
     COMMAND $<TARGET_FILE:lichtfeld_tests> "--gtest_filter=HdrDisplayChainTest.*" --gtest_color=no
 )
 set_tests_properties(lichtfeld.hdr_display_chain PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    LABELS "fast"
+    TIMEOUT 60
+)
+
+# HDR fork (PLAN.md M3 §3-§4): exposure + Debevec LUT + saturation gate stage.
+add_test(NAME lichtfeld.hdr_bracket_stage
+    COMMAND $<TARGET_FILE:lichtfeld_tests> "--gtest_filter=HdrBracketStageTest.*" --gtest_color=no
+)
+set_tests_properties(lichtfeld.hdr_bracket_stage PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    LABELS "fast;gpu"
+    TIMEOUT 120
+)
+
+# HDR fork (PLAN.md M3 §1): the position hold-out rule (no GPU).
+add_test(NAME lichtfeld.hdr_eval_split
+    COMMAND $<TARGET_FILE:lichtfeld_tests> "--gtest_filter=EvalSplitTest.*" --gtest_color=no
+)
+set_tests_properties(lichtfeld.hdr_eval_split PROPERTIES
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     LABELS "fast"
     TIMEOUT 60

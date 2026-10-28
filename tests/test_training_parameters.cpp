@@ -271,6 +271,7 @@ namespace {
             {"eval_steps", "vector-valued evaluation schedule is managed separately"},
             {"image_count_scaler", "image-count scaling bookkeeping is not a registry property"},
             {"image_count_scaler_total", "steps_scaler the image-count share was written with"},
+            {"hdr_crf", "HDR bracket CRF path uses its dedicated Python binding (like the PPISP sidecar)"},
             {"ppisp_sidecar_path", "PPISP sidecar path uses its dedicated Python binding"},
             {"save_steps", "vector-valued save schedule is managed separately"},
         };
@@ -401,6 +402,69 @@ namespace {
         const auto json = params.to_json();
         EXPECT_FALSE(json.at("ppisp_exposure_from_exif").get<bool>());
         EXPECT_FALSE(OptimizationParameters::from_json(json).ppisp_exposure_from_exif);
+    }
+
+    // HDR fork (PLAN.md M3 §7): the bracket parameters round-trip, the enum keeps its string wire format, and the
+    // validation refuses the configurations that cannot train.
+    TEST_F(TrainingParametersTest, HdrBracketParametersRoundTripAndValidation) {
+        using lfs::core::param::HdrExposureMode;
+        const auto defaults = OptimizationParameters::mrnf_defaults();
+        EXPECT_FALSE(defaults.hdr_brackets);
+        EXPECT_TRUE(defaults.hdr_crf.empty());
+        EXPECT_EQ(defaults.hdr_exposure, HdrExposureMode::Learn);
+        EXPECT_FLOAT_EQ(defaults.hdr_exposure_prior, 1.0f);
+        EXPECT_FLOAT_EQ(defaults.hdr_exposure_lr, 2e-3f);
+        EXPECT_FLOAT_EQ(defaults.hdr_exposure_max_delta, 3.0f);
+        EXPECT_EQ(defaults.to_json().at("hdr_exposure").get<std::string>(), "learn");
+        EXPECT_EQ(defaults.to_json().at("hdr_crf").get<std::string>(), "");
+
+        auto params = defaults;
+        params.hdr = true;
+        params.use_exposure_correction = false;
+        params.dc_reg = 0.0f;
+        params.hdr_brackets = true;
+        params.hdr_crf = "/data/smoke_hdr/brackets/crf.json";
+        params.hdr_exposure = HdrExposureMode::Exif;
+        params.hdr_exposure_prior = 0.5f;
+        params.hdr_exposure_lr = 1e-3f;
+        params.hdr_exposure_max_delta = 2.0f;
+        EXPECT_TRUE(params.validate().empty()) << params.validate();
+
+        const auto json = params.to_json();
+        EXPECT_TRUE(json.at("hdr_brackets").get<bool>());
+        EXPECT_EQ(json.at("hdr_exposure").get<std::string>(), "exif");
+        EXPECT_EQ(json.at("hdr_crf").get<std::string>(), "/data/smoke_hdr/brackets/crf.json");
+        const auto restored = OptimizationParameters::from_json(json);
+        EXPECT_TRUE(restored.hdr_brackets);
+        EXPECT_EQ(restored.hdr_exposure, HdrExposureMode::Exif);
+        EXPECT_EQ(restored.hdr_crf, std::filesystem::path("/data/smoke_hdr/brackets/crf.json"));
+        EXPECT_FLOAT_EQ(restored.hdr_exposure_prior, 0.5f);
+        EXPECT_FLOAT_EQ(restored.hdr_exposure_lr, 1e-3f);
+        EXPECT_FLOAT_EQ(restored.hdr_exposure_max_delta, 2.0f);
+        auto old_json = json;
+        old_json["hdr_exposure"] = "learn";
+        EXPECT_EQ(OptimizationParameters::from_json(old_json).hdr_exposure, HdrExposureMode::Learn);
+
+        auto no_hdr = params;
+        no_hdr.hdr = false;
+        EXPECT_NE(no_hdr.validate().find("hdr_brackets requires hdr"), std::string::npos) << no_hdr.validate();
+        auto no_crf = params;
+        no_crf.hdr_crf.clear();
+        EXPECT_NE(no_crf.validate().find("--hdr-crf"), std::string::npos) << no_crf.validate();
+        auto bad_prior = params;
+        bad_prior.hdr_exposure_prior = -1.0f;
+        EXPECT_NE(bad_prior.validate().find("hdr_exposure_prior"), std::string::npos);
+        auto bad_lr = params;
+        bad_lr.hdr_exposure_lr = 0.0f;
+        EXPECT_NE(bad_lr.validate().find("hdr_exposure_lr"), std::string::npos);
+        auto bad_delta = params;
+        bad_delta.hdr_exposure_max_delta = 0.0f;
+        EXPECT_NE(bad_delta.validate().find("hdr_exposure_max_delta"), std::string::npos);
+        // Plain --hdr on EXRs is untouched by the bracket parameters.
+        auto exr = defaults;
+        exr.hdr = true;
+        exr.use_exposure_correction = false;
+        EXPECT_TRUE(exr.validate().empty()) << exr.validate();
     }
 
     TEST_F(TrainingParametersTest, MissingOptionalJsonValuesUseStrategyDefaults) {
