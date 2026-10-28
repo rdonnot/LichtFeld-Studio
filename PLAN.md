@@ -389,8 +389,13 @@ act under `--hdr-brackets`; a legacy `1 << 5` checkpoint bit is mapped to `1 << 
 
 **Verdict.**
 1. **Done-when still NOT met: best 31.27 dB vs 32.15, −0.9 dB** (from −1.8). B1 is the whole gain (+0.83 dB,
-   μ-law vs truth 32.26 → 34.01, now ABOVE M2's 33.06): the ~3 % held-out radiance deficit was coverage, as the
-   bias scan said, and the random radiance background removes most of it (render/merge median gain 1.035 → 1.031).
+   μ-law vs truth 32.26 → 34.01, now ABOVE M2's 33.06). What it fixed is the dark TAIL, not the uniform offset: the
+   diagnostic (eval-all renders of `m3_learn`, `LFS_EVAL_DUMP_ALPHA=1`) found the ~2 % render/merge deficit on the
+   TRAINING positions too (median 0.981 vs 0.980 held-out, every decile 0.973–0.99) and the accumulated alpha the
+   same as M2's (mean 1−α 0.029 / 0.033 held-out / training vs M2 0.034 / 0.032) — so neither "held-out only" nor
+   "α < 1" held; after B1 the per-decile deficit is unchanged (median 0.981) while the geometric-mean gain fell
+   1.083 → 1.029, i.e. the random background removed the under-covered dark pixels. The uniform ~2 % (worth
+   +0.33 dB at most) stays unexplained; opacity_reg is already 0 under MRNF, so it is not that regulariser.
 2. **B2 hurts, monotonically in p** (31.21 → 30.98 → 30.74; μ-law vs truth 34.0 → 32.5 → 30.8): the toe and
    shoulder codes the hat silences are the ONLY frames that see the lamp and the alcove, and the mid-range-weighted
    error map grows where nothing was missing. Default is now 0; the flag stays for a real capture's noisy curve.
