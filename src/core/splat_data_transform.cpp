@@ -610,6 +610,7 @@ namespace lfs::core {
             new_scene_scale);
 
         cropped_splat.set_active_sh_degree(splat_data._active_sh_degree);
+        cropped_splat._hdr = splat_data._hdr;
 
         if (splat_data._densification_info.is_valid() && splat_data._densification_info.size(0) == num_points) {
             cropped_splat._densification_info =
@@ -1039,6 +1040,7 @@ namespace lfs::core {
             splat_data._opacity.index_select(0, indices).contiguous(),
             splat_data._scene_scale);
         result.set_active_sh_degree(splat_data._active_sh_degree);
+        result._hdr = splat_data._hdr;
 
         // If the mask keeps every gaussian, preserve the LOD tree unchanged.
         if (count == static_cast<int>(splat_data.size()) && splat_data.lod_tree) {

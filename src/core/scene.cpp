@@ -5194,7 +5194,20 @@ namespace lfs::core {
             return sh_degree_limit < 0 ? model.get_max_sh_degree()
                                        : std::min({sh_degree_limit, model.get_active_sh_degree(), model.get_max_sh_degree()});
         };
-        const auto limit_degree = [sh_degree_limit, &storage_degree](std::unique_ptr<lfs::core::SplatData> result) {
+        // HDR (M5): a merge of HDR models keeps the first one's state (log radiance, s, cap) so the exporters
+        // still know how to read the SH; a mixed LDR/HDR merge cannot be expressed and is exported as LDR.
+        const auto carry_hdr = [&splats](std::unique_ptr<lfs::core::SplatData> result) {
+            if (!result)
+                return result;
+            const bool any_hdr = std::any_of(splats.begin(), splats.end(), [](const auto& e) { return e.first->is_hdr(); });
+            const bool all_hdr = std::all_of(splats.begin(), splats.end(), [](const auto& e) { return e.first->is_hdr(); });
+            if (all_hdr)
+                result->set_hdr(splats.front().first->hdr());
+            else if (any_hdr)
+                LOG_WARN("Merging HDR (log radiance) and LDR models: the result is treated as LDR, the HDR parts will look wrong");
+            return result;
+        };
+        const auto limit_degree = [sh_degree_limit, &storage_degree, &carry_hdr](std::unique_ptr<lfs::core::SplatData> result) {
             if (result && sh_degree_limit >= 0) {
                 // Match effectiveRenderShDegree: dormant stored bands must not
                 // contribute to an export of the current rendered appearance.
@@ -5202,7 +5215,7 @@ namespace lfs::core {
                 if (result->get_max_sh_degree() > effective)
                     result->set_sh_degree(effective);
             }
-            return result;
+            return carry_hdr(std::move(result));
         };
 
         int max_sh = 0;
@@ -5355,7 +5368,7 @@ namespace lfs::core {
                     return limit_degree(std::move(result));
                 }
 
-                return clone_filtered_swizzled(*src);
+                return carry_hdr(clone_filtered_swizzled(*src));
             }
 
             size_t total_visible = 0;

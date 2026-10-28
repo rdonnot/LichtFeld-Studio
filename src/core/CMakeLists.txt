@@ -85,6 +85,8 @@ set(CORE_SOURCES
         image_io.cpp
         image_codecs.cpp
         image_exr.cpp
+        hdr_sh.cpp
+        hdr_sh.cu
         mapped_file.cpp
         optimization_properties.cpp
         parameters.cpp
@@ -130,6 +132,8 @@ target_include_directories(lfs_core
         ${CMAKE_SOURCE_DIR}/src/io/include
         ${CMAKE_CURRENT_SOURCE_DIR}/tensor  # For internal/ headers
         ${CMAKE_CURRENT_SOURCE_DIR}/nn
+        # hdr_sh.cu includes the viewer's display_color.inc as the CUDA twin of the tone operators (PLAN.md M5)
+        ${CMAKE_SOURCE_DIR}/src/rendering/rasterizer/vulkan/shader/src/slang
 )
 target_include_directories(lfs_core SYSTEM PRIVATE
     ${CMAKE_SOURCE_DIR}/external

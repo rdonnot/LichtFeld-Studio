@@ -5,6 +5,7 @@
 #include "ply.hpp"
 #include "core/assert.hpp"
 #include "core/cuda/sh_layout.cuh"
+#include "core/hdr_sh.hpp"
 #include "core/logger.hpp"
 #include "core/native_fs.hpp"
 #include "core/path_utils.hpp"
@@ -18,6 +19,7 @@
 #include "core/tensor/internal/memory_pool.hpp"
 #include "io/atomic_output_path.hpp"
 #include "io/error.hpp"
+#include "io/hdr_export.hpp"
 #include "io/ply_export_internal.hpp"
 #include "ply_property_order.hpp"
 #include "tinyply.hpp"
@@ -443,6 +445,15 @@ namespace lfs::io {
         size_t rest_offsets[ply_constants::MAX_REST_COMPONENTS];
         int dc_count = 0, rest_count = 0;
 
+        // HDR header comments (PLAN.md M5, docs/hdr.md): `comment lichtfeld_hdr linear|log`,
+        // `comment hdr_scale <s>`, `comment hdr_color_max <cap>`. 0 = an ordinary (LDR) PLY.
+        enum HdrMode : int { HDR_NONE = 0,
+                             HDR_LINEAR = 1,
+                             HDR_LOG = 2 };
+        int hdr_mode = HDR_NONE;
+        float hdr_scale = 0.0f;
+        float hdr_color_max = 0.0f;
+
         FastPropertyLayout() {
             std::fill(std::begin(dc_offsets), std::end(dc_offsets), SIZE_MAX);
             std::fill(std::begin(rest_offsets), std::end(rest_offsets), SIZE_MAX);
@@ -595,6 +606,44 @@ namespace lfs::io {
         }
     };
 
+    // `comment lichtfeld_hdr linear|log`, `comment hdr_scale <s>`, `comment hdr_color_max <cap>` (docs/hdr.md).
+    void parse_hdr_comment(std::string_view line, FastPropertyLayout& layout) {
+        line = trim_ascii_whitespace(line.substr(7));
+        const auto take_word = [&line]() {
+            line = trim_ascii_whitespace(line);
+            const size_t end = line.find_first_of(" \t");
+            const std::string_view word = line.substr(0, end);
+            line = end == std::string_view::npos ? std::string_view{} : line.substr(end);
+            return word;
+        };
+        const std::string_view key = take_word();
+        const std::string_view value = take_word();
+        const auto parse_float = [](const std::string_view text, float& out) {
+            float parsed = 0.0f;
+            const auto* const begin = text.data();
+            const auto* const end = begin + text.size();
+            const auto [ptr, ec] = std::from_chars(begin, end, parsed);
+            if (ec != std::errc{} || ptr != end || !std::isfinite(parsed))
+                return false;
+            out = parsed;
+            return true;
+        };
+        if (key == "lichtfeld_hdr") {
+            if (value == "linear")
+                layout.hdr_mode = FastPropertyLayout::HDR_LINEAR;
+            else if (value == "log")
+                layout.hdr_mode = FastPropertyLayout::HDR_LOG;
+            else
+                LOG_WARN("PLY: unknown lichtfeld_hdr convention '{}' (expected linear or log); read as LDR", value);
+        } else if (key == "hdr_scale") {
+            if (!parse_float(value, layout.hdr_scale))
+                LOG_WARN("PLY: unreadable hdr_scale '{}'", value);
+        } else if (key == "hdr_color_max") {
+            if (!parse_float(value, layout.hdr_color_max))
+                LOG_WARN("PLY: unreadable hdr_color_max '{}'", value);
+        }
+    }
+
     [[nodiscard]] std::expected<std::pair<size_t, FastPropertyLayout>, std::string>
     parse_header(const char* data, size_t file_size) {
         LOG_TIMER_TRACE("PLY header parsing");
@@ -656,11 +705,13 @@ namespace lfs::io {
             size_t line_len = line_end - line_start;
             lines_parsed++;
 
-            // Skip empty lines and comments (# and spec PLY "comment" lines)
+            // Skip empty lines and comments (# and spec PLY "comment" lines) — after reading the HDR ones.
             if (line_len == 0 || line_start[0] == '#')
                 continue;
-            if (line_len >= 7 && std::strncmp(line_start, "comment", 7) == 0)
+            if (line_len >= 7 && std::strncmp(line_start, "comment", 7) == 0) {
+                parse_hdr_comment(std::string_view(line_start, line_len), layout);
                 continue;
+            }
 
             if (lines_parsed % 1000 == 0) {
                 LOG_TRACE("Parsed {} header lines...", lines_parsed);
@@ -2272,6 +2323,32 @@ namespace lfs::io {
                 splat_data.set_active_sh_degree(sh_degree, std::move(shN_bounds));
             }
 
+            // HDR PLY (docs/hdr.md): linear radiance is projected back to the internal log SH; log SH is
+            // taken as is. Either way the model carries its state for the rasterizer, exporters and viewer.
+            if (layout.hdr_mode != FastPropertyLayout::HDR_NONE) {
+                SplatData::HdrState state{true, layout.hdr_scale, layout.hdr_color_max};
+                if (state.color_max <= 0.0f) {
+                    state.color_max = state.scale > 0.0f ? 1000.0f * state.scale : 1e4f;
+                    LOG_WARN("PLY: HDR file has no hdr_color_max; using {} ({})", state.color_max,
+                             state.scale > 0.0f ? "1000 * hdr_scale" : "1e4, no hdr_scale either");
+                }
+                if (layout.hdr_mode == FastPropertyLayout::HDR_LINEAR) {
+                    const auto log_sh = core::hdr::linear_sh_to_log(splat_data.sh0(), splat_data.shN_canonical());
+                    splat_data.sh0() = log_sh.sh0.contiguous();
+                    splat_data.sh0().set_name("SplatData.sh0");
+                    if (splat_data.max_sh_coeffs_rest() > 0 && log_sh.shN.is_valid())
+                        splat_data.shN_set_from_canonical(log_sh.shN);
+                    LOG_INFO("PLY: lichtfeld_hdr linear (s = {}, cap = {}): radiance projected to log SH on {} directions{}",
+                             state.scale, state.color_max,
+                             core::hdr::projection_direction_count(sh_degree),
+                             encode_shN_q16 ? "; ShN kept as float32 (q16 request dropped for the conversion)" : "");
+                } else {
+                    LOG_INFO("PLY: lichtfeld_hdr log (s = {}, cap = {}): internal log SH read as is", state.scale,
+                             state.color_max);
+                }
+                splat_data.set_hdr(state);
+            }
+
             splat_data.set_tensor_allocator(options.splat_tensor_allocator);
 
             // One-shot pool trim after the model is fully in SplatData / exportable
@@ -3257,7 +3334,8 @@ namespace lfs::io {
                                       bool binary = true,
                                       std::span<const PlyAttributeBlock> extra_attributes = {},
                                       ExportProgressCallback progress_callback = nullptr,
-                                      const std::optional<core::ProvenanceStamp>& provenance = {}) {
+                                      const std::optional<core::ProvenanceStamp>& provenance = {},
+                                      std::span<const std::string> comments = {}) {
             // Write using tinyply
             tinyply::PlyFile ply;
             const size_t N = pc.means.size(0);
@@ -3456,6 +3534,11 @@ namespace lfs::io {
                 if (provenance) {
                     header += "comment lichtfeld_provenance ";
                     header += core::provenance_to_json(*provenance);
+                    header += '\n';
+                }
+                for (const auto& comment : comments) {
+                    header += "comment ";
+                    header += comment;
                     header += '\n';
                 }
                 header += std::format("element vertex {}\n", N);
@@ -3798,6 +3881,8 @@ namespace lfs::io {
                 ply.get_comments().push_back(
                     "lichtfeld_provenance " + core::provenance_to_json(*provenance));
             }
+            for (const auto& comment : comments)
+                ply.get_comments().push_back(comment);
 
             {
                 LOG_TIMER_DEBUG("PLY export: file write");
@@ -4048,16 +4133,62 @@ namespace lfs::io {
             return std::unexpected(filtered_extra_attributes.error());
         }
 
+        // HDR (PLAN.md M5, docs/hdr.md): the model holds log radiance; the file holds what the header says.
+        const SplatData* source = &splat_data;
+        std::optional<SplatData> converted;
+        if (splat_data.is_hdr()) {
+            const auto& state = splat_data.hdr();
+            auto mode = options.hdr.mode;
+            if (mode == core::hdr::ExportMode::Auto)
+                mode = core::hdr::ExportMode::LinearRadiance;
+            if (!report_export_progress(options.progress_callback, 0.02f, "Converting HDR SH"))
+                return make_error(ErrorCode::CANCELLED, "Export cancelled by user", options.output_path);
+            const auto comment_float = [](const char* key, const float value) {
+                return std::format("{} {}", key, value);
+            };
+            try {
+                switch (mode) {
+                case core::hdr::ExportMode::BakedLdr:
+                    converted.emplace(core::hdr::bake_hdr_to_ldr(splat_data, options.hdr.exposure_ev, options.hdr.tone));
+                    LOG_INFO("PLY: HDR model baked to LDR at {:+.2f} EV ({}), no HDR header: opens in any viewer",
+                             options.hdr.exposure_ev, core::hdr::tone_operator_name(options.hdr.tone));
+                    break;
+                case core::hdr::ExportMode::LogInternal:
+                    options.comments.emplace_back("lichtfeld_hdr log");
+                    options.comments.push_back(comment_float("hdr_scale", state.scale));
+                    options.comments.push_back(comment_float("hdr_color_max", state.color_max));
+                    LOG_INFO("PLY: HDR model written as internal log SH (lichtfeld_hdr log; only LichtFeld reads it)");
+                    break;
+                default:
+                    converted.emplace(core::hdr::to_linear_radiance(splat_data));
+                    options.comments.emplace_back("lichtfeld_hdr linear");
+                    options.comments.push_back(comment_float("hdr_scale", state.scale));
+                    options.comments.push_back(comment_float("hdr_color_max", state.color_max));
+                    options.comments.push_back(comment_float("hdr_display_exposure", state.scale > 0.0f ? 1.0f / state.scale : 1.0f));
+                    LOG_INFO("PLY: HDR model written as linear radiance SH (lichtfeld_hdr linear, s = {}, cap = {}, "
+                             "display exposure {})",
+                             state.scale, state.color_max, state.scale > 0.0f ? 1.0f / state.scale : 1.0f);
+                    break;
+                }
+            } catch (const std::exception& e) {
+                return make_error(ErrorCode::ENCODING_FAILED, std::format("HDR SH conversion failed: {}", e.what()),
+                                  options.output_path);
+            }
+            if (converted)
+                source = &*converted;
+        }
+
         Result<PointCloud> pc;
         {
             LOG_TIMER_DEBUG("PLY export: point cloud build total");
             pc = to_point_cloud_with_progress(
-                splat_data,
+                *source,
                 scale_export_progress(options.progress_callback, 0.05f, 0.80f),
                 options.output_path);
         }
         if (!pc)
             return std::unexpected(pc.error());
+        converted.reset();
 
         auto filtered_options = options;
         filtered_options.extra_attributes = std::move(*filtered_extra_attributes);
@@ -4163,7 +4294,7 @@ namespace lfs::io {
                     auto write_progress_callback = scale_export_progress(opts.progress_callback, 0.5f, 1.0f);
                     if (const auto result = write_ply_binary(
                             pc, opts.output_path, opts.binary, opts.extra_attributes,
-                            write_progress_callback, opts.provenance);
+                            write_progress_callback, opts.provenance, opts.comments);
                         !result) {
                         LOG_ERROR("PLY save failed: {}", result.error().format());
                     }
@@ -4177,7 +4308,7 @@ namespace lfs::io {
                 LOG_TIMER_DEBUG("PLY export: write total");
                 if (const auto result = write_ply_binary(
                         prepared_point_cloud, options.output_path, options.binary, options.extra_attributes,
-                        write_progress_callback, options.provenance);
+                        write_progress_callback, options.provenance, options.comments);
                     !result) {
                     return std::unexpected(result.error());
                 }
