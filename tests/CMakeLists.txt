@@ -801,6 +801,7 @@ set(TEST_FILES
     fastgs_tile_culling_boundary_cuda.cu
     test_hdr_color_chain.cpp
     hdr_color_chain_cuda.cu
+    test_hdr_display_chain.cpp
     test_sh_swizzle_layout.cpp
     test_shn_bda_index_math.cpp
     test_python_io.cpp
@@ -1413,6 +1414,16 @@ add_test(NAME lichtfeld.hdr_color_chain
 set_tests_properties(lichtfeld.hdr_color_chain PROPERTIES
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     LABELS "fast;gpu"
+    TIMEOUT 60
+)
+
+# HDR fork (PLAN.md M4): the viewer's display chain (exposure in EV, tone, sRGB OETF, false colour), CPU only.
+add_test(NAME lichtfeld.hdr_display_chain
+    COMMAND $<TARGET_FILE:lichtfeld_tests> "--gtest_filter=HdrDisplayChainTest.*" --gtest_color=no
+)
+set_tests_properties(lichtfeld.hdr_display_chain PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    LABELS "fast"
     TIMEOUT 60
 )
 
