@@ -88,6 +88,9 @@ namespace lfs::training {
         [[nodiscard]] lfs::core::Tensor apply_eval(const lfs::core::Tensor& v, float b) const;
         [[nodiscard]] lfs::core::Tensor apply_eval(const lfs::core::Tensor& v, int uid) const;
 
+        // B2: Debevec's hat of the frame's JPEG as a per-pixel loss / error-map weight, [H,W] (kernels doc).
+        [[nodiscard]] const lfs::core::Tensor& hat_weight(const lfs::core::Tensor& gt, float p);
+
         [[nodiscard]] Diagnostics diagnostics() const;
         [[nodiscard]] float grad_delta_for_test(int uid) const; // the accumulated dL/ddelta before step()
         void set_delta_for_test(int uid, float value);
@@ -118,6 +121,7 @@ namespace lfs::training {
         lfs::core::Tensor grad_delta_; // [N]
 
         // Saved by apply() for backward_in_place(): the render handle and the masked dz/du.
+        lfs::core::Tensor hat_;        // [H,W], the last hat_weight()
         lfs::core::Tensor saved_v_;
         lfs::core::Tensor saved_dzdu_;
         int saved_uid_ = -1;

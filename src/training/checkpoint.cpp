@@ -646,6 +646,7 @@ namespace lfs::training {
             file.read(reinterpret_cast<char*>(&header), sizeof(header));
             if (!file)
                 return std::unexpected("Invalid checkpoint: truncated header");
+            lfs::core::normalize_legacy_checkpoint_flags(header);
             if (auto validation = lfs::core::validate_checkpoint_header(header, file_size); !validation)
                 return std::unexpected(validation.error());
 

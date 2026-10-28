@@ -144,6 +144,25 @@ namespace lfs::training::kernels {
             grad[frame] = 0.0f;
         }
 
+        template <typename GtT>
+        __global__ void bracket_hat_kernel(const GtT* __restrict__ gt,
+                                           float* __restrict__ out,
+                                           const size_t hw,
+                                           const float gt_scale,
+                                           const float p) {
+            const size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+            if (i >= hw)
+                return;
+            float w = 0.0f;
+            for (int c = 0; c < 3; ++c) {
+                const float code = static_cast<float>(gt[c * hw + i]) * gt_scale;
+                const float hat = fminf(fmaxf(fminf(code, 255.0f - code) * (1.0f / 127.5f), 0.0f), 1.0f);
+                // p == 0 is 1 everywhere, spelled out: under fast math powf(0, 0) is exp2(0 * -inf) = NaN.
+                w += p == 1.0f ? hat : (p == 0.0f ? 1.0f : powf(hat, p));
+            }
+            out[i] = w * (1.0f / 3.0f);
+        }
+
         void check_float_cuda(const lfs::core::Tensor& t, const char* what) {
             if (!t.is_valid() || t.device() != lfs::core::Device::CUDA || t.dtype() != lfs::core::DataType::Float32)
                 throw std::invalid_argument(std::string("hdr_bracket: ") + what + " must be a Float32 CUDA tensor");
@@ -231,6 +250,37 @@ namespace lfs::training::kernels {
         bracket_adam_kernel<<<1, 32, 0, stream>>>(delta, exp_avg, exp_avg_sq, grad, frame, args.lr, args.beta1,
                                                   args.beta2, args.eps, args.prior, args.max_delta, bias1, bias2);
         LFS_CUDA_LAUNCH_CHECK(stream, "training.hdr_bracket.adam");
+    }
+
+    void hdr_bracket_hat_weight(const lfs::core::Tensor& gt, const float p, lfs::core::Tensor& out) {
+        if (!gt.is_valid() || gt.device() != lfs::core::Device::CUDA || gt.ndim() != 3 || gt.shape()[0] != 3)
+            throw std::invalid_argument("hdr_bracket_hat_weight: gt must be a [3,H,W] CUDA tensor");
+        if (gt.dtype() != lfs::core::DataType::Float32 && gt.dtype() != lfs::core::DataType::UInt8)
+            throw std::invalid_argument("hdr_bracket_hat_weight: gt must be Float32 or UInt8");
+        if (!(p >= 0.0f) || !std::isfinite(p))
+            throw std::invalid_argument("hdr_bracket_hat_weight: p must be finite and >= 0");
+        const lfs::core::TensorShape shape{gt.shape()[1], gt.shape()[2]};
+        if (!out.is_valid() || out.shape() != shape || out.dtype() != lfs::core::DataType::Float32 ||
+            out.device() != lfs::core::Device::CUDA)
+            out = lfs::core::Tensor::empty(shape, lfs::core::Device::CUDA, lfs::core::DataType::Float32);
+        const size_t hw = shape.elements();
+        if (hw == 0)
+            return;
+        const auto gt_c = gt.is_contiguous() ? gt : gt.contiguous();
+        const cudaStream_t stream = out.stream();
+        gt_c.sync_to_stream(stream);
+        if (gt_c.dtype() == lfs::core::DataType::UInt8)
+            bracket_hat_kernel<unsigned char><<<blocks_for(hw), kThreads, 0, stream>>>(
+                gt_c.ptr<unsigned char>(), out.ptr<float>(), hw, 1.0f, p);
+        else
+            bracket_hat_kernel<float><<<blocks_for(hw), kThreads, 0, stream>>>(
+                gt_c.ptr<float>(), out.ptr<float>(), hw, 255.0f, p);
+        LFS_CUDA_LAUNCH_CHECK(stream, "training.hdr_bracket.hat");
+    }
+
+    double hdr_bracket_hat_host(const double code, const double p) {
+        const double hat = std::min(std::max(std::min(code, 255.0 - code) / 127.5, 0.0), 1.0);
+        return p == 1.0 ? hat : (p == 0.0 ? 1.0 : std::pow(hat, p));
     }
 
     void hdr_bracket_lut_host(const float* g, const double u_in, double* z_code, double* dz_code_du) {

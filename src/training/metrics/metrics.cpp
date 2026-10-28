@@ -34,6 +34,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <ctime>
 #include <iomanip>
 #include <iostream>
@@ -1763,6 +1764,19 @@ namespace lfs::training {
                 if (!skip &&
                     !lfs::core::save_image_exr(eval_dir / (image_stems[image_idx] + ".exr"), prepared->linear_render))
                     LOG_WARN("Eval: could not write the HDR render of '{}'", cam->image_name());
+                // HDR fork (PLAN.md M3 improvement round, B1): LFS_EVAL_DUMP_ALPHA=1 writes the rasterizer's
+                // accumulated alpha of the same render as eval_step_N/<stem>_alpha.exr (three equal channels).
+                static const bool dump_alpha = std::getenv("LFS_EVAL_DUMP_ALPHA") != nullptr;
+                if (!skip && dump_alpha && prepared->output.alpha.is_valid()) {
+                    auto alpha = prepared->output.alpha.contiguous();
+                    if (alpha.ndim() == 2)
+                        alpha = alpha.unsqueeze(0);
+                    if (alpha.ndim() == 3 && alpha.shape()[0] == 1) {
+                        const auto alpha3 = lfs::core::Tensor::cat({alpha, alpha, alpha}, 0).contiguous();
+                        if (!lfs::core::save_image_exr(eval_dir / (image_stems[image_idx] + "_alpha.exr"), alpha3))
+                            LOG_WARN("Eval: could not write the alpha of '{}'", cam->image_name());
+                    }
+                }
             }
             prepared->linear_render = {};
 

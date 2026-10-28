@@ -470,28 +470,30 @@ namespace lfs::training::kernels {
     __global__ void random_background_kernel(
         float* __restrict__ output,
         const int HW,
-        const uint32_t seed) {
+        const uint32_t seed,
+        const float scale) {
         const int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
         if (idx >= HW)
             return;
 
         const uint32_t base = seed ^ static_cast<uint32_t>(idx);
-        output[idx] = uint_to_float(pcg_hash(base));
-        output[HW + idx] = uint_to_float(pcg_hash(base + 0x9E3779B9u));
-        output[2 * HW + idx] = uint_to_float(pcg_hash(base + 0x6C8E9CF9u));
+        output[idx] = uint_to_float(pcg_hash(base)) * scale;
+        output[HW + idx] = uint_to_float(pcg_hash(base + 0x9E3779B9u)) * scale;
+        output[2 * HW + idx] = uint_to_float(pcg_hash(base + 0x6C8E9CF9u)) * scale;
     }
 
     void launch_random_background(
         float* output,
         const int H, const int W,
         const uint64_t seed,
-        cudaStream_t stream) {
+        cudaStream_t stream,
+        const float scale) {
         stream = resolve_stream(stream);
         const int HW = H * W;
         const unsigned int blocks = num_blocks_1d(HW);
         random_background_kernel<<<blocks, kThreadsPerBlock, 0, stream>>>(
-            output, HW, static_cast<uint32_t>(seed));
+            output, HW, static_cast<uint32_t>(seed), scale);
         LFS_CUDA_LAUNCH_CHECK(stream, "training.grad_alpha.random_background");
     }
 

@@ -412,6 +412,15 @@ namespace lfs::core {
             float hdr_exposure_prior = 1.f;                        // loss += prior * mean_i(delta_i^2)
             float hdr_exposure_lr = 2e-3f;                         // Adam on delta, no warm-up
             float hdr_exposure_max_delta = 3.f;                    // |delta| clamp, in stops
+            // Improvement round B1: a random per-pixel background in RADIANCE units during bracket training, each
+            // channel uniform in [0, hdr_bracket_bg * s] (s = hdr_scale), so a pixel the model leaves translucent
+            // is punished on the training views too; 0 = the solid background. Evaluation keeps the solid one.
+            float hdr_bracket_bg = 1.f;
+            // B2: Debevec's hat w(z) = min(z, 255 - z) / 127.5 of the JPEG code, channel-averaged, to the power p, as a
+            // per-pixel weight on the photometric loss AND on the error map that drives growth (the roi_weight path);
+            // the loss is divided by the frame's pixel count times the set's mean hat, not by the frame's weight sum,
+            // so a frame's toe and shoulder teach less than another frame's mid-range. 0 = off (weight 1).
+            float hdr_bracket_hat = 1.f;
             bool undistort = false;
             float steps_scaler = 1.f;       // Scales training step counts; values <= 0 disable scaling
             float image_count_scaler = 1.f; // Share of steps_scaler applied by the GUI image-count auto-scale

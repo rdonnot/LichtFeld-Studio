@@ -60,6 +60,14 @@ namespace lfs::training::kernels {
     LFS_CUDA_API void hdr_bracket_adam_step(float* delta, float* exp_avg, float* exp_avg_sq, float* grad,
                                             int frame, const HdrBracketAdamArgs& args, cudaStream_t stream);
 
+    // Improvement round B2: Debevec's hat as a per-pixel weight. hat(z) = min(z, 255 - z) / 127.5 on the code z of
+    // each channel (1 at mid-range, 0 at both ends; the gate's codes >= 250 / <= 5 weigh <= 0.04); the pixel's
+    // weight is the channel mean of hat^p. p = 0 gives 1 everywhere. gt [3,H,W] UInt8 codes or Float32 in [0,1];
+    // out becomes [H,W] Float32 CUDA (reallocated when its shape differs).
+    LFS_CUDA_API void hdr_bracket_hat_weight(const lfs::core::Tensor& gt, float p, lfs::core::Tensor& out);
+    // Host reference: hat(code)^p for one channel sample.
+    LFS_CUDA_API double hdr_bracket_hat_host(double code, double p);
+
     // Host reference of the forward LUT for one channel (the same arithmetic as the kernel, double precision):
     // z in code units (0..255 inside the LUT, extrapolated outside) and dz/du in code units per nat.
     LFS_CUDA_API void hdr_bracket_lut_host(const float* log_irradiance_channel, double u, double* z_code, double* dz_code_du);
