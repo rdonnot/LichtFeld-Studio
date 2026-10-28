@@ -169,6 +169,43 @@ Reported side by side below. (7) `tests/image_codecs` is skipped when the OpenEX
 PSNR against the merged EXR — `tools/eval`), the `_refine_weight_max` histogram overlap check, the CRF/exposure PSNR per
 held-out exposure through `hdr_metrics.py ldr-psnr`, and the cap-vs-scale decision in (5).
 
+**Review follow-ups applied (hdr-architect, 2026-10-28, on top of 2ef3c0155).**
+1. *Cap and init relative to the scale s, radiance stays absolute* — decision for (5): `hdr_color_max = 0` by default
+   means `1000 · s`, resolved in `Trainer::initialize` right after `s` and written back like `s`, so the saved config, a
+   resume and the PLY carry the ABSOLUTE value the kernels used (validation accepts 0; the resolved cap is logged).
+   `init_log_radiance_sh0(splat, s, μ)` now seeds in absolute units — the proxies were seeded at `ln p`, i.e. `ln s`
+   (7.8 nats on `smoke_hdr`) below the scene. DEVIATION from the review's exact formula, measured: the review's
+   `ln(clamp(p,1e-3,1)·s)` gave 32.91 dB but depth AbsRel against the sparse points 0.13 → 0.75 (same with the cap
+   pinned at 1e4: 33.16 dB / 0.74, so the init, not the cap) — the proxy is display-referred, `p·s` puts a mid-grey at
+   ~s/2 ≈ 1200 and the optimiser darkens it through opacity faster than log colour can fall. Reading `p` as the
+   loss domain's μ-law value and inverting it like the MRNF blob seeds (`x = expm1(p·ln(1+μ))/μ`, radiance `x·s`,
+   `sh0 = (ln max(x·s, 1e-3) − 0.5)/SH_C0`) gives 34.52 dB and AbsRel 0.080 (proxy-LDR run: 0.053); both inits are
+   now literally the same formula. Golden JSONs / the Python stub follow the new cap default.
+2. `image_exr.cpp` `encode_exr`: the encode pipeline is destroyed with `exr_encoding_destroy` BEFORE `exr_finish` frees
+   its context (it was destroyed after, by the RAII guard); channels are declared `EXR_PERCEPTUALLY_LOGARITHMIC`
+   (pLinear = 0), OpenEXR's convention for scene-linear RGB — `EXR_PERCEPTUALLY_LINEAR` was wrong for radiance.
+3. `pop_scores.cu` clamped the splat colour at `config::max_blend_color` (4) while the POPSpa forward already applied
+   the HDR activation: `accumulate_pop_scores` takes the forward's `color_max` (`ctx.color_activation.color_max`).
+4. `metrics.cpp`: under HDR the raw render is no longer `clamp(0,1)`-ed (meaningless on radiance); HDR has no
+   appearance model, so the raw image IS the corrected μ-law image and both bias rows read "Bias (raw, mu-law)" /
+   "Bias (corrected, mu-law)"; the "Photometric domain" line says so.
+5. `resolve_image_extension` logs (info, once per file) when it substitutes a sibling extension.
+6. Numbers after the change (`smoke_hdr --images images_hdr --hdr`, 3000 it, `--test-every 8 --eval`): `out/m2_hdr_v3`
+   s = 2421.4, cap = 2 421 400 (1000·s, in `training_config.json`), **34.52 dB** μ-law (was 27.51), SSIM 0.939,
+   LPIPS 0.257, depth AbsRel 0.080 (was 0.133), max rendered radiance **15 835** (was 9631 at the 1e4 cap; the lamp
+   truth ≈ 20 400), no NaN in the eval EXRs, loss at iteration 100/200/300 = 0.171/0.164/0.114 (was
+   0.878/0.929/0.761 — the dark init cost the first ~600 iterations), final 0.027 (was 0.060). Intermediate runs kept
+   for the record: `out/m2_hdr_v2` (review formula, 32.91 dB / AbsRel 0.746), `out/m2_hdr_v2_cap1e4` (same init, cap
+   1e4: 33.16 dB / 0.739, max radiance 10 000). LDR: `ldr_reeval.py` on `baseline_a` with this binary — metrics
+   identical, 16 eval PNGs identical. `ctest -R hdr`, `PopScoreBackends`/POPSpa and `TrainingParametersTest` pass.
+
+*Owed to the next milestones (from the same review).* **M5:** the PLY must carry `comment hdr_log_sh 1`,
+`comment hdr_scale <s>`, `comment hdr_color_max <absolute cap>` — a stock viewer shows log values otherwise and the
+cap cannot be reconstructed from `s` alone once a user overrides it. **M4:** the viewer SH shader needs
+`exp(min(b, ln cmax))` and a LOG-exposure range — the scene's natural exposure is `1/s` (≈ 4e-4 on `smoke_hdr`), far
+below the viewer's 0.1–8 slider (`py_rendering.cpp:732`). **M3:** the validation at `parameters.cpp:1035-1043`
+(`hdr` refuses PPISP / the grid) must be re-opened for the exposure-only PPISP.
+
 ---
 
 ## M3 — Train directly from brackets (exposure model)
