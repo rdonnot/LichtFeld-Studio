@@ -880,6 +880,7 @@ namespace lfs::core {
         copy._max_sh_degree = _max_sh_degree;
         copy._active_sh_degree = _active_sh_degree;
         copy._scene_scale = _scene_scale;
+        copy._hdr = _hdr;
         copy._means = cloned(_means, "splat.positions");
         copy._sh0 = cloned(_sh0, "splat.sh0");
         copy._shN = cloned(_shN, "splat.shN");
@@ -926,6 +927,7 @@ namespace lfs::core {
         copy._max_sh_degree = _max_sh_degree;
         copy._active_sh_degree = _active_sh_degree;
         copy._scene_scale = _scene_scale;
+        copy._hdr = _hdr;
         copy._means = clone_tensor(_means);
         copy._sh0 = clone_tensor(_sh0);
         copy._shN = clone_tensor(_shN);
@@ -952,6 +954,7 @@ namespace lfs::core {
         : _active_sh_degree(other._active_sh_degree),
           _max_sh_degree(other._max_sh_degree),
           _scene_scale(other._scene_scale),
+          _hdr(other._hdr),
           _means(std::move(other._means)),
           _sh0(std::move(other._sh0)),
           _shN(std::move(other._shN)),
@@ -973,6 +976,7 @@ namespace lfs::core {
         other._active_sh_degree = 0;
         other._max_sh_degree = 0;
         other._scene_scale = 0.0f;
+        other._hdr = HdrState{};
         other._deleted_count.store(0, std::memory_order_relaxed);
         other._deleted_mask_version.store(0, std::memory_order_relaxed);
         other._param_layout_generation = 0;
@@ -985,6 +989,8 @@ namespace lfs::core {
             _active_sh_degree = other._active_sh_degree;
             _max_sh_degree = other._max_sh_degree;
             _scene_scale = other._scene_scale;
+            _hdr = other._hdr;
+            other._hdr = HdrState{};
 
             // Move tensors
             _means = std::move(other._means);

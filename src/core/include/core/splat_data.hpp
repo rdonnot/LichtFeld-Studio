@@ -247,6 +247,25 @@ namespace lfs::core {
         int get_max_sh_degree() const { return _max_sh_degree; }
         float get_scene_scale() const { return _scene_scale; }
         void set_scene_scale(float scene_scale) { _scene_scale = scene_scale; }
+
+        // ========== HDR colour state (the --hdr fork) ==========
+        // How the SH coefficients of THIS model are to be read. LDR models (the default) hold the usual
+        // colour = 0.5 + SH_C0 * sh0 + ... in [0,1]. An HDR model trained with --hdr holds LOG radiance:
+        // radiance = exp(min(0.5 + SH_C0 * sh0 + ..., ln color_max)), in absolute scene units; `scale` is the
+        // scene's P99 luminance s (the natural display exposure is 1/s) and `color_max` the absolute cap
+        // the kernels used. Transient, in-memory only: set by the trainer (from the resolved
+        // OptimizationParameters) and by loaders that recognise an HDR file (PLY comments, M5); the
+        // SplatData checkpoint stream does not carry it (the training config beside it does). Every
+        // consumer that turns SH into colour — the fastgs rasterizer (color_activation_for), the Vulkan
+        // viewer (M4), the exporters (M5) — reads it from here and nowhere else.
+        struct HdrState {
+            bool log_sh = false;   // SH are log radiance (exp before use)
+            float scale = 0.f;     // s: P99 luminance of the training images (0 = unknown)
+            float color_max = 0.f; // absolute radiance cap (0 = none)
+        };
+        const HdrState& hdr() const { return _hdr; }
+        void set_hdr(const HdrState& state) { _hdr = state; }
+        bool is_hdr() const { return _hdr.log_sh; }
         unsigned long size() const { return static_cast<unsigned long>(_means.shape()[0]); }
 
         // ========== Raw tensor access (for optimization) ==========
@@ -512,6 +531,7 @@ namespace lfs::core {
         int _active_sh_degree = 0;
         int _max_sh_degree = 0;
         float _scene_scale = 0.f;
+        HdrState _hdr{};
 
         // Parameters — any new Tensor member must be added to detach_from_streams().
         Tensor _means;

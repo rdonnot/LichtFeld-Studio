@@ -3100,6 +3100,10 @@ namespace lfs::training {
             // radiance. A resumed checkpoint already stores log values.
             if (params_.optimization.hdr && current_iteration_ == 0)
                 init_log_radiance_sh0(splat, params_.optimization.hdr_scale, params_.optimization.hdr_mu);
+            // The model carries how its SH are to be read (log radiance, s, cap) for every consumer that is
+            // not the trainer: the viewer, the exporters, the video render (SplatData::HdrState).
+            if (params_.optimization.hdr)
+                splat.set_hdr({true, params_.optimization.hdr_scale, params_.optimization.hdr_color_max});
 
             // Re-initialize strategy with new parameters
             strategy_->set_training_dataset(train_dataset_);

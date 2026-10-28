@@ -198,6 +198,11 @@ namespace lfs::training {
         return activation;
     }
 
+    // The same, read from the model itself (SplatData::HdrState): for consumers outside the trainer.
+    inline fast_lfs::rasterization::ColorActivation color_activation_for(const lfs::core::SplatData& model) {
+        return color_activation_for(model.is_hdr(), model.hdr().color_max);
+    }
+
     // Backward pass with optional extra alpha gradient for masked training
     void fast_rasterize_backward(
         FastRasterizeContext& ctx,
