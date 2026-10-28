@@ -70,7 +70,7 @@ acts on them.
 
 ## Baked LDR — opens in any viewer
 
-`--hdr-export baked --hdr-exposure <EV> --hdr-tonemap <op>` (CLI, `convert`), `hdr="baked"` (Python),
+`--hdr-export baked --hdr-export-ev <EV> --hdr-tonemap <op>` (CLI, `convert`), `hdr="baked"` (Python),
 or the **HDR colour** row of the export panel writes a display-referred file: per direction
 
     srgb( tone( 2^EV / s · exp(min(b(w), ln cap)) ) )   clamped to [0, 1]

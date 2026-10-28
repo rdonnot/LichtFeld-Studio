@@ -611,7 +611,7 @@ reader contract is `docs/hdr.md`.
   `hdr_source_for_ldr_writer` — the gate in `save_spz / save_sog / save_ssog / export_html / save_usd /
   save_nurec_usdz / save_rad` (bake when `mode == BakedLdr`, refuse otherwise). Every option struct carries
   `core::hdr::ExportOptions hdr` (`io/exporter.hpp`).
-- CLI: `HdrExportFlags` in `argument_parser.cpp` (`--hdr-export`, `--hdr-exposure`, `--hdr-tonemap`) on the
+- CLI: `HdrExportFlags` in `argument_parser.cpp` (`--hdr-export`, `--hdr-export-ev`, `--hdr-tonemap`) on the
   training `--export` and on `convert`; `TrainingParameters::hdr_export`, `ConvertParameters::hdr_export`;
   `training_setup.cpp save_final_splat` and `converter.cpp saveSplat` pass it. `--render-exposure`,
   `--render-tonemap`, `--render-exr-dir` on `--render-camera-path` (`RenderPathConfig`); `application.cpp
@@ -649,7 +649,7 @@ reader contract is `docs/hdr.md`.
   **73.5 dB** (71.5–75.9 per view; PSNR vs GT 36.507084, −0.0013 dB); degree-0 copies: linear vs log **145.0 dB**
   (exact), both 33.164474 dB vs GT. The ShN projection costs ~0.001 dB on this scene — far below the training's
   own run-to-run spread.
-- *Baked LDR* (`--hdr-export baked --hdr-exposure 0 --hdr-tonemap aces`): no HDR comments; DC colours in
+- *Baked LDR* (`--hdr-export baked --hdr-export-ev 0 --hdr-tonemap aces`): no HDR comments; DC colours in
   [5.9e-7, 0.99995]; the full degree-3 expansion in [−0.010, 1.006] on 512 directions. Synthetic σ-0.3 lobes show
   the Gibbs overshoot of a band-limited fit of a CLIPPED curve: hard `linear` to 1.12, `neutral` [−0.08, 1.09],
   `aces` [−0.01, 1.03]; viewers clamp the evaluated colour, so this is invisible on screen but it is a property

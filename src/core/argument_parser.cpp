@@ -530,15 +530,15 @@ namespace {
         }
     };
 
-    // --hdr-export / --hdr-exposure / --hdr-tonemap (PLAN.md M5, docs/hdr.md), shared by training --export and convert.
+    // --hdr-export / --hdr-export-ev / --hdr-tonemap (PLAN.md M5, docs/hdr.md), shared by training --export and convert.
     struct HdrExportFlags {
         ::args::ValueFlag<std::string> mode, tonemap;
         ::args::ValueFlag<float> exposure;
 
         explicit HdrExportFlags(::args::Group& group)
-            : mode(group, "mode", "HDR models only: how the exported files hold colour. linear = linear-radiance SH with the lichtfeld_hdr header (PLY default, read by any splat tool); baked = display-referred LDR at --hdr-exposure through --hdr-tonemap, opens in any viewer (required for sog, ssog, spz, glb, html, usd, rad); log = the internal log SH (PLY only, LichtFeld reads it back losslessly)", {"hdr-export"}),
+            : mode(group, "mode", "HDR models only: how the exported files hold colour. linear = linear-radiance SH with the lichtfeld_hdr header (PLY default, read by any splat tool); baked = display-referred LDR at --hdr-export-ev through --hdr-tonemap, opens in any viewer (required for sog, ssog, spz, glb, html, usd, rad); log = the internal log SH (PLY only, LichtFeld reads it back losslessly)", {"hdr-export"}),
               tonemap(group, "operator", "Tone operator for --hdr-export baked: none, linear, filmic, hejl, aces (default), aces2, neutral", {"hdr-tonemap"}),
-              exposure(group, "ev", "Exposure for --hdr-export baked, in EV relative to the scene's natural exposure 1/s (default 0)", {"hdr-exposure"}) {}
+              exposure(group, "ev", "Exposure for --hdr-export baked, in EV relative to the scene's natural exposure 1/s (default 0; the training flag --hdr-exposure exif|learn is a different thing)", {"hdr-export-ev"}) {}
 
         std::optional<std::string> read(lfs::core::hdr::ExportOptions& options) {
             if (mode) {
@@ -556,7 +556,7 @@ namespace {
             if (exposure) {
                 const float ev = ::args::get(exposure);
                 if (!std::isfinite(ev) || ev < -30.0f || ev > 30.0f)
-                    return std::format("Invalid --hdr-exposure {}: expected a finite EV in [-30, 30]", ev);
+                    return std::format("Invalid --hdr-export-ev {}: expected a finite EV in [-30, 30]", ev);
                 options.exposure_ev = ev;
             }
             return std::nullopt;

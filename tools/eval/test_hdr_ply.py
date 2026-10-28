@@ -150,7 +150,7 @@ def test_baked_ldr_in_unit_range(tmp_path: Path, degree: int):
     make_log_ply(src, 2048, degree, 0.3)
     for tone in ("linear", "aces", "neutral"):
         baked = tmp_path / f"baked_{tone}.ply"
-        expect_ok(convert(src, baked, "--hdr-export", "baked", "--hdr-exposure", "0", "--hdr-tonemap", tone))
+        expect_ok(convert(src, baked, "--hdr-export", "baked", "--hdr-export-ev", "0", "--hdr-tonemap", tone))
         lines, hdr, data = hdr_ply.read_ply(baked)
         assert hdr["mode"] is None, lines
         assert not any(ln.startswith("comment hdr_") for ln in lines)
@@ -166,7 +166,7 @@ def test_baked_ldr_in_unit_range(tmp_path: Path, degree: int):
             assert c.min() > -0.15 and c.max() < 1.15, (tone, c.min(), c.max())
     # a different exposure moves the colours
     darker = tmp_path / "baked_dark.ply"
-    expect_ok(convert(src, darker, "--hdr-export", "baked", "--hdr-exposure", "-3"))
+    expect_ok(convert(src, darker, "--hdr-export", "baked", "--hdr-export-ev", "-3"))
     _, _, d0 = hdr_ply.read_ply(tmp_path / "baked_aces.ply")
     _, _, d1 = hdr_ply.read_ply(darker)
     assert float(np.mean(d1["f_dc_0"])) < float(np.mean(d0["f_dc_0"]))

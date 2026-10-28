@@ -78,7 +78,7 @@ namespace lfs::core::hdr {
         return std::format(
             "{} cannot hold an HDR model (its SH are log radiance and the format quantises colour to [0,1]). "
             "Two ways out: export a PLY (linear radiance, `lichtfeld_hdr linear`, read by any splat tool), or "
-            "bake to LDR at an exposure (--hdr-export baked --hdr-exposure <EV> --hdr-tonemap <op>; "
+            "bake to LDR at an exposure (--hdr-export baked --hdr-export-ev <EV> --hdr-tonemap <op>; "
             "hdr=\"baked\" in Python; the HDR row of the export panel).",
             format_name);
     }
