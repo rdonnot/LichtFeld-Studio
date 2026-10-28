@@ -51,7 +51,7 @@ namespace lfs::training::kernels {
         float beta1 = 0.9f;
         float beta2 = 0.999f;
         float eps = 1e-8f;
-        float prior = 1.0f;     // gradient of prior * delta^2 is added: 2 * prior * delta
+        float prior = 1.0f;     // loss += prior * delta^2 per VISITED frame (one frame per step): gradient 2 * prior * delta
         float max_delta = 3.0f; // |delta| clamp after the step
         int step = 1;           // this frame's Adam step count (bias correction), >= 1
     };

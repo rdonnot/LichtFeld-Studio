@@ -33,7 +33,9 @@ namespace lfs::core {
         HAS_PPISP_CONTROLLER = 1 << 2,
         HAS_SPARSITY = 1 << 3,
         HAS_POPSPA = 1 << 4,
-        HAS_HDR_BRACKET_STAGE = 1 << 5, // HDR fork (PLAN.md M3): per-frame exposure deltas + Adam state, after POPSpa
+        // HDR fork (PLAN.md M3): per-frame exposure deltas + Adam state, after POPSpa. A HIGH bit so upstream's next
+        // flags (1 << 5, 1 << 6, ...) never collide with it when the fork rebases.
+        HAS_HDR_BRACKET_STAGE = 1u << 30,
     };
 
     constexpr CheckpointFlags operator|(const CheckpointFlags a, const CheckpointFlags b) {

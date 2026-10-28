@@ -3091,7 +3091,12 @@ namespace lfs::training {
             dataset_config.resize_factor = params.dataset.resize_factor;
             dataset_config.max_width = params.dataset.max_width;
             dataset_config.test_every = params.dataset.test_every;
-            dataset_config.test_by_position = params.dataset.test_by_position;
+            dataset_config.test_by_position = holds_out_by_position(params);
+            if (params.optimization.hdr_brackets && !params.dataset.test_by_position && params.dataset.test_every > 1 &&
+                params.optimization.holds_out_eval_images())
+                LOG_INFO("HDR brackets: holding out by POSITION (every {}th position with all its frames) — a single "
+                         "held-out frame would leak its pose through the sibling frames; --test-by-position implied",
+                         params.dataset.test_every);
 
             // Get enabled cameras with images from the scene
             std::vector<std::shared_ptr<lfs::core::Camera>> source_cameras;
@@ -3130,7 +3135,7 @@ namespace lfs::training {
                             return lhs->uid() < rhs->uid();
                         });
                     const int test_every = std::max(1, params.dataset.test_every);
-                    const auto held_out = eval_split_mask(source_cameras, test_every, params.dataset.test_by_position);
+                    const auto held_out = eval_split_mask(source_cameras, test_every, holds_out_by_position(params));
                     for (size_t i = 0; i < source_cameras.size(); ++i) {
                         const bool is_val = hold_out && held_out[i];
                         source_cameras[i]->set_split(

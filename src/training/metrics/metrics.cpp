@@ -1510,9 +1510,9 @@ namespace lfs::training {
             if (params.optimization.hdr_brackets)
                 _reporter->set_photometric_domain(std::format(
                     "LDR at each frame's EXIF exposure (HDR brackets): render x 2^(exif_ev - exif_ev_ref) through "
-                    "the Debevec LUT of '{}' (exposure delta = 0), PSNR/SSIM/LPIPS against the JPEG on the pixels it "
-                    "recorded unclipped (every channel in (5, 250); the rest masked); linear renders once per "
-                    "position in eval_step_N/<frame>.exr",
+                    "the Debevec LUT of '{}' (exposure delta = 0), quantised to the 8-bit grid like an LDR run, "
+                    "PSNR/SSIM/LPIPS against the JPEG on the pixels it recorded unclipped (every channel in (5, 250); "
+                    "the rest masked); linear renders once per position in eval_step_N/<frame>.exr",
                     lfs::core::path_to_utf8(params.optimization.hdr_crf)),
                                                  ", LDR at EXIF exposure, saturation masked");
             else if (params.optimization.hdr)

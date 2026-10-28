@@ -16,7 +16,8 @@ Per held-out position and source frame: render × 2^(exif_ev − exif_ev_ref) (=
 ISO/N) → the LUT (`hdr_metrics.apply_crf`) → PSNR against the JPEG on the pixels the JPEG recorded unclipped (every
 channel in (5, 250)). The gain is NOT fitted: the EXIF is the anchor of the units. As a unit check the gain IS fitted
 (least squares in log space on the position's reference frame, compare_hdr_vs_proxy.py's formula) and printed for
-the render and for the merge — both must be ≈ 1.0. μ-law PSNR (μ = 5000, P99-normalised, so the merge/truth scale
+the render and for the merge — both must be ≈ 1.0 (the MEDIAN of the per-pixel log ratio; the geometric mean is
+printed beside it and is pulled by the dark tail of the model's errors). μ-law PSNR (μ = 5000, P99-normalised, so the merge/truth scale
 cancels) against the merged EXR and the truth.
 Logs ldr_psnr_ev{±n}, ldr_psnr_mean, mu_psnr_merge, mu_psnr_truth, gain_render, gain_merge to out/metrics.csv.
 """
@@ -49,13 +50,15 @@ def unclipped(jpg: np.ndarray) -> np.ndarray:
     return np.all((jpg > CLIP_LO) & (jpg < CLIP_HI), axis=-1)
 
 
-def fit_gain(hdr: np.ndarray, jpg: np.ndarray, t: float, g: np.ndarray) -> float:
-    """exp(mean(g[z] − log(E·t))) over the unclipped pixels: the factor the EXR would need to reproduce the JPEG."""
+def fit_gain(hdr: np.ndarray, jpg: np.ndarray, t: float, g: np.ndarray) -> tuple[float, float]:
+    """(exp(median), exp(mean)) of g[z] − log(E·t) over the unclipped pixels: the factor the EXR would need to
+    reproduce the JPEG. The median is the unit check; the geometric mean is dominated by the dark tail of the model's
+    errors (hdr-architect review: 1.083 mean vs 0.979 median on the same render) and is printed only for the record."""
     m = unclipped(jpg) & np.all(hdr > 0, axis=-1)
     if m.sum() < 1000:
-        return float("nan")
+        return float("nan"), float("nan")
     d = np.concatenate([g[c][jpg[..., c][m]] - np.log(hdr[..., c][m] * t) for c in range(3)])
-    return float(np.exp(np.mean(d)))
+    return float(np.exp(np.median(d))), float(np.exp(np.mean(d)))
 
 
 def held_out_renders(run: Path, step: int) -> dict[str, Path]:
@@ -147,7 +150,10 @@ def score_run(run: Path, step: int, ds: Path, truth: Path | None, label: str) ->
         "label": label, "evs": evs, "ldr": means, "ldr_mean": ldr_mean,
         "frac": {ev: float(np.mean(frac_ev[ev])) for ev in evs},
         "mu_merge": float(np.mean(mu_merge)), "mu_truth": float(np.mean(mu_truth)) if mu_truth else float("nan"),
-        "gain_render": float(np.nanmean(gains_render)), "gain_merge": float(np.nanmean(gains_merge)),
+        "gain_render": float(np.nanmean([a for a, _ in gains_render])),
+        "gain_render_mean": float(np.nanmean([b for _, b in gains_render])),
+        "gain_merge": float(np.nanmean([a for a, _ in gains_merge])),
+        "gain_merge_mean": float(np.nanmean([b for _, b in gains_merge])),
         "positions": len(rows), "k_truth": k_truth,
     }
     return out
@@ -156,10 +162,12 @@ def score_run(run: Path, step: int, ds: Path, truth: Path | None, label: str) ->
 def print_table(results: list[dict]) -> None:
     evs = results[0]["evs"]
     print()
-    print(f"{'run':14s} " + " ".join(f"{ev:+5.1f}EV " for ev in evs) + "   mean   mu/merge mu/truth  gain(render) gain(merge)")
+    print(f"{'run':14s} " + " ".join(f"{ev:+5.1f}EV " for ev in evs)
+          + "   mean   mu/merge mu/truth  gain render median/mean  gain merge median/mean")
     for r in results:
         print(f"{r['label']:14s} " + " ".join(f"{r['ldr'].get(ev, float('nan')):7.2f} " for ev in evs)
-              + f" {r['ldr_mean']:6.2f}   {r['mu_merge']:6.2f}   {r['mu_truth']:6.2f}   {r['gain_render']:8.3f}     {r['gain_merge']:8.3f}")
+              + f" {r['ldr_mean']:6.2f}   {r['mu_merge']:6.2f}   {r['mu_truth']:6.2f}   "
+              + f"{r['gain_render']:6.3f} / {r['gain_render_mean']:6.3f}        {r['gain_merge']:6.3f} / {r['gain_merge_mean']:6.3f}")
     print(f"merge/truth scale k = {results[0]['k_truth']:.3f} (pooled median; the truth column is scored against truth x k)")
     print("evaluated fraction (unclipped pixels) per EV: " + ", ".join(f"{ev:+g}: {results[0]['frac'][ev]*100:.0f}%" for ev in evs))
 
@@ -193,7 +201,8 @@ def main(argv: list[str] | None = None) -> int:
     if not args.no_log:
         metrics = {f"ldr_psnr_ev{ev:+g}": r["ldr"][ev] for ev in r["evs"]}
         metrics.update(ldr_psnr_mean=r["ldr_mean"], mu_psnr_merge=r["mu_merge"], mu_psnr_truth=r["mu_truth"],
-                       gain_render=r["gain_render"], gain_merge=r["gain_merge"], iteration=args.step)
+                       gain_render=r["gain_render"], gain_render_mean=r["gain_render_mean"],
+                       gain_merge=r["gain_merge"], iteration=args.step)
         log_rows(args.csv, milestone="M3", scene="smoke_hdr_brackets", run=args.run_name or args.run.name, metrics=metrics)
         print(f"logged {len(metrics)} metrics to {args.csv}")
     return 0

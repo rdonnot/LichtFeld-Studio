@@ -4,6 +4,7 @@
 #pragma once
 
 #include "core/camera.hpp"
+#include "core/parameters.hpp"
 #include <memory>
 #include <span>
 #include <string>
@@ -47,6 +48,13 @@ namespace lfs::training {
             held[i] = (it->second % every) == 0;
         }
         return held;
+    }
+
+    // The rule every split site applies: the explicit option, or — for a bracket set — by position whenever
+    // anything is held out at all. Holding out single FRAMES of a bracket would leak the held-out pose through its
+    // sibling frames (same camera, other exposures), so a bracket run never splits by image.
+    [[nodiscard]] inline bool holds_out_by_position(const lfs::core::param::TrainingParameters& params) noexcept {
+        return params.dataset.test_by_position || (params.optimization.hdr_brackets && params.dataset.test_every > 1);
     }
 
     [[nodiscard]] inline std::vector<bool> eval_split_mask(

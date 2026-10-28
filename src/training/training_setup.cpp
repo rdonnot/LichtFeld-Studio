@@ -1000,7 +1000,7 @@ namespace lfs::training {
                     });
                 }
 
-                const auto held_out = eval_split_mask(cameras, test_every, params.dataset.test_by_position);
+                const auto held_out = eval_split_mask(cameras, test_every, holds_out_by_position(params));
                 size_t train_count = 0;
                 size_t val_count = 0;
                 size_t mask_count = 0;
@@ -1439,7 +1439,7 @@ namespace lfs::training {
                     });
                 }
 
-                const auto held_out = eval_split_mask(cameras, test_every, params.dataset.test_by_position);
+                const auto held_out = eval_split_mask(cameras, test_every, holds_out_by_position(params));
                 size_t train_count = 0, val_count = 0, mask_count = 0;
                 for (size_t i = 0; i < cameras.size(); ++i) {
                     const bool is_val = hold_out && held_out[i];

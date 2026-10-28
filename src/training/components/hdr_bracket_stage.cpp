@@ -207,7 +207,9 @@ namespace lfs::training {
         args.frame = frame;
         args.gate_high = config_.gate_high;
         args.gate_low = config_.gate_low;
-        saved_v_ = v.is_contiguous() ? v : v.contiguous();
+        // Keep our OWN copy of the render for the backward (as hdr_x_saved did): v is a handle on output.image,
+        // which the trainer may reuse or release between the forward and the backward.
+        saved_v_ = v.is_contiguous() ? v.clone() : v.contiguous();
         auto z = kernels::hdr_bracket_forward(saved_v_, args, &gt, &saved_dzdu_);
         saved_uid_ = uid;
         return z;
