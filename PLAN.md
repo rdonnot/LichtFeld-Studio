@@ -830,6 +830,54 @@ cd tools && uv run python -m pytest -q eval/test_ldr_reeval.py                  
 
 ---
 
+## OCIO — colour management (branch `hdr-ocio`, 2026-10-28, from `hdr` d9c739ed0)
+
+Romain's requirement: "the hdr gaussian has to be compatible with ocio". Design confirmed by the hdr-architect agent.
+
+- **Working space** = `lin_srgb` (Linear Rec.709 / sRGB primaries, D65) in memory, always; `.licht` stores nothing.
+  HDR PLYs (`linear` and `log`) carry `comment lichtfeld_colorspace lin_srgb`; every EXR we write carries
+  `chromaticities` (Rec.709/D65) + the string attribute `lichtfeld_colorspace`. A foreign LINEAR tag on a PLY/EXR
+  is converted through OCIO's 3×3 on load (probed on basis vectors; ACEScg → AP1→Rec.709 verified); a non-linear or
+  unknown tag, or any tag on a `log` file, is refused. LDR PLYs untouched.
+- **`core/ocio.hpp` / `src/core/ocio.cpp`** — the only TU including OpenColorIO (vcpkg `opencolorio` 2.5.1, BSD-3):
+  `Selection{config_path, display, view, look}`, process default, `displays/views/looks/validate/working_space`,
+  `lut_for()` = 65³ float LUT over a per-channel log2 shaper (−14…+8 stops, node 0 = f(0)), `apply_cpu()` (the
+  oracle), `linear_matrix()`, `sample()`. Built-in configs (`ocio://studio-config-latest`…) need no file; `$OCIO`
+  or `--ocio <file>` override.
+- **One sampler text** `lfsOcioLut` in `display_color.inc` (`#ifdef LFS_OCIO_LUT_FETCH`), compiled by the compose
+  shader (5th push-descriptor storage buffer), the CUDA bake kernel (`hdr_sh.cu`) and the C++ twin.
+- **Viewer**: tone mapping 7 "OCIO" (HDR models only), `ocio_display/view/look` through RenderSettings → request →
+  session → Python; the LUT is baked/cached/uploaded once per key; EV applied in linear BEFORE the view; the
+  viewer's selection is also the process default for bakes ("what you see is what you bake"); falls back to ACES
+  on failure or on the standard-portal profile; viewer output stays RGBA8 (HDR views shown clipped).
+- **Bake**: `ToneOperator::Ocio`, `ExportOptions.ocio`; CLI `--hdr-tonemap ocio`, `--render-tonemap ocio`,
+  `--ocio <file>`, `--ocio-display/-view/-look` (validated up front, names listed on error); Python
+  `lf.io.ocio_available/config_name/working_space/displays/views/looks/get_ocio/set_ocio`, `tonemap="ocio"`.
+
+**Measured** (`tests/test_hdr_display_chain.cpp`, 5 new cases; 20 004 radiances 2^−12…2^10 with random chroma,
+built-in studio config AND Houdini 22's CG config `/opt/hfs22.0/packages/ocio/cg-config-v3.0.0_aces-v2.0_ocio-v2.5.ocio`):
+
+| view | LUT vs OCIO CPU processor | max abs error |
+|---|---|---|
+| sRGB - Display / ACES 2.0 - SDR 100 nits (Rec.709) | 68.2 dB | 1.8 / 255 |
+| sRGB - Display / Un-tone-mapped | 56.9 dB | 5.1 / 255 |
+| sRGB - Display / Raw | 50.3 dB | 11.1 / 255 |
+
+Exposure-before-view: pass. CUDA bake == C++ twin: ≤ 1e-5. End to end (`tools/eval/ocio_check.py`): a headless
+video frame of the M2 model rendered with `--render-tonemap ocio` vs the same EXR pushed through PyOpenColorIO 2.6
+with Houdini's config: **45.0 dB, mean |d| 1.1/255, p99 4/255** (crf 10 video is the floor); the EXR header carries
+`lichtfeld_colorspace='lin_srgb'` + Rec.709 chromaticities. `ldr_reeval.py` on `baseline_a`: identical.
+
+**Traps.** (1) The app's OCIO (2.5.1) and PyOpenColorIO (2.6) ship different built-in config versions: cross-checks
+must use a config FILE, never `ocio://…`. (2) Static caches of CUDA tensors / OCIO objects are leaked on purpose
+(destroyed after their runtimes otherwise). (3) A hand-built gtest binary on `gtest_main` segfaults at exit after
+any CUDA→CPU copy because nothing calls `PinnedMemoryAllocator::instance().shutdown()` — upstream's
+`tests/test_main.cpp` does; run the suite through `build/tests`, not a standalone harness. (4) glslang needs the
+LUT SSBO declared before `display_color.inc` is included.
+
+**Owed.** Viewer HDR output (float swapchain / HDR displays); USD/NuRec carrying the colourspace; Houdini opening a
+tagged PLY (SideFX licence lapsed on this machine); Nuke/Resolve not tried.
+
 ## Findings log
 (Claude appends notes per milestone here.)
 

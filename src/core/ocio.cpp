@@ -52,8 +52,9 @@ namespace lfs::core::ocio {
 
         std::mutex g_mutex;
         Selection g_current;
-        std::map<std::string, OCIO::ConstConfigRcPtr> g_configs;           // by config_path ("" = env / built-in)
-        std::map<std::string, std::shared_ptr<const Lut3D>> g_luts;         // by Lut3D::key
+        // Leaked on purpose (never destroyed at exit): OCIO's own statics may go first.
+        auto& g_configs = *new std::map<std::string, OCIO::ConstConfigRcPtr>();   // by config_path ("" = env / built-in)
+        auto& g_luts = *new std::map<std::string, std::shared_ptr<const Lut3D>>(); // by Lut3D::key
         bool g_warned_scene_linear = false;
 
         constexpr const char* kBuiltinConfig = "studio-config-latest";

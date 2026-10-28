@@ -244,18 +244,19 @@ namespace lfs::core::hdr {
         };
         DeviceLut device_lut(const ocio::Selection& selection) {
             static std::mutex mutex;
-            static std::map<std::string, DeviceLut> cache;
+            // Leaked on purpose: a static map of CUDA tensors would be destroyed after the CUDA runtime at exit.
+            static auto* const cache = new std::map<std::string, DeviceLut>();
             std::string error;
             const auto lut = ocio::lut_for(selection, ocio::kDefaultLutSize, &error);
             if (!lut)
                 throw std::runtime_error(std::format("HDR bake through OCIO is not possible: {}", error));
             std::lock_guard lock(mutex);
-            if (auto it = cache.find(lut->key); it != cache.end())
+            if (auto it = cache->find(lut->key); it != cache->end())
                 return it->second;
             DeviceLut d;
             d.data = Tensor::from_vector(lut->rgb, TensorShape{lut->rgb.size()}, Device::CUDA);
             d.ref = cuda::OcioLutRef{d.data.ptr<float>(), lut->size, lut->log2_lo, lut->log2_hi};
-            cache[lut->key] = d;
+            (*cache)[lut->key] = d;
             LOG_INFO("HDR: OCIO display LUT on the device ({}^3, config '{}')", lut->size, lut->config);
             return d;
         }
