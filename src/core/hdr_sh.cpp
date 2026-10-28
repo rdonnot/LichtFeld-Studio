@@ -4,6 +4,7 @@
 
 #include "core/hdr_sh.hpp"
 #include "core/cuda/hdr_sh_kernels.hpp"
+#include "core/cuda_error.hpp"
 #include "core/logger.hpp"
 
 #include <algorithm>
@@ -265,7 +266,7 @@ namespace lfs::core::hdr {
                 // mode 1 (linear -> log) floors each direction at 1 % of the splat's DC: X's column 0, row stride B.
                 cuda::apply_per_direction(values.ptr<float>(), n, static_cast<size_t>(proj.D), mode, color_max, exposure,
                                           static_cast<int>(tone), values.stream(), X.ptr<float>(), B);
-                cudaStreamSynchronize(values.stream());
+                LFS_CUDA_CHECK_MSG(cudaStreamSynchronize(values.stream()), "cudaStreamSynchronize(hdr_sh per-direction)");
                 Tensor A = values.mm(proj.pinv_t); // [n*3, B]
                 Tensor A3 = A.reshape(TensorShape{n, 3, B}).permute({0, 2, 1}).contiguous(); // [n, B, 3]
                 sh0_chunks.push_back(((A3.slice(1, 0, 1) - 0.5f) / kShC0).contiguous());
@@ -307,7 +308,7 @@ namespace lfs::core::hdr {
         Tensor hwc = linear_chw.to(Device::CUDA).to(DataType::Float32).permute({1, 2, 0}).contiguous(); // [H, W, 3]
         cuda::apply_per_direction(hwc.ptr<float>(), h * w, 1, 3, 0.0f, display_exposure(state, exposure_ev),
                                   static_cast<int>(tone), hwc.stream());
-        cudaStreamSynchronize(hwc.stream());
+        LFS_CUDA_CHECK_MSG(cudaStreamSynchronize(hwc.stream()), "cudaStreamSynchronize(hdr_sh image bake)");
         return hwc.permute({2, 0, 1}).contiguous();
     }
 

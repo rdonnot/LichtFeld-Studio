@@ -296,12 +296,12 @@ fast_lfs::rasterization::ForwardResult fast_lfs::rasterization::forward(
             screen_share,
             color_activation.color_max,
             log_color_max);
+        LFS_CUDA_LAUNCH_CHECK(stream, "fastgs.forward.preprocess");
         };
         if (color_activation.log_radiance)
             launch_typed.template operator()<true>();
         else
             launch_typed.template operator()<false>();
-        LFS_CUDA_LAUNCH_CHECK(stream, "fastgs.forward.preprocess");
     };
 
     const size_t visibility_mask_bytes =
