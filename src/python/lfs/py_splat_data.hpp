@@ -49,6 +49,13 @@ namespace lfs::python {
         float scene_scale() const { return data_->get_scene_scale(); }
         size_t num_points() const { return data_->size(); }
 
+        // HDR state (docs/hdr.md): log-radiance SH, the scale s (natural display exposure 1/s) and the cap.
+        bool is_hdr() const { return data_->is_hdr(); }
+        float hdr_scale() const { return data_->hdr().scale; }
+        float hdr_color_max() const { return data_->hdr().color_max; }
+        void set_hdr(bool log_sh, float scale, float color_max) { data_->set_hdr({log_sh, scale, color_max}); }
+        PySplatData bake_hdr_to_ldr(float exposure_ev, const std::string& tonemap) const;
+
         // Soft deletion
         PyTensor deleted() const;
         bool has_deleted_mask() const { return data_->has_deleted_mask(); }

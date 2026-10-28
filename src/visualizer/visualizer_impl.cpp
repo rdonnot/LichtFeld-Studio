@@ -4,6 +4,7 @@
 
 #include "visualizer_impl.hpp"
 #include "core/animatable_property.hpp"
+#include "core/hdr_export_options.hpp"
 #include "core/crash_handler.hpp"
 #include "core/cuda_error.hpp"
 #include "core/data_loading_service.hpp"
@@ -935,7 +936,8 @@ namespace lfs::vis {
                                        int node_count, int sh_degree, bool rad_flip_y,
                                        bool rad_streamable, int spz_version,
                                        bool include_provenance,
-                                       int lod_levels, float lod_ratio, int chunk_count_k, float chunk_extent, int chunk_min_k, int kmeans_iterations) {
+                                       int lod_levels, float lod_ratio, int chunk_count_k, float chunk_extent, int chunk_min_k, int kmeans_iterations,
+                                       int hdr_mode, float hdr_exposure_ev, int hdr_tone) {
             if (auto* gm = python::get_gui_manager()) {
                 std::vector<std::string> names;
                 names.reserve(node_count);
@@ -947,7 +949,11 @@ namespace lfs::vis {
                                                rad_flip_y,
                                                rad_streamable,
                                                spz_version,
-                                               include_provenance, lod_levels, lod_ratio, chunk_count_k, chunk_extent, chunk_min_k, kmeans_iterations);
+                                               include_provenance, lod_levels, lod_ratio, chunk_count_k, chunk_extent, chunk_min_k, kmeans_iterations,
+                                               lfs::core::hdr::ExportOptions{
+                                                   .mode = static_cast<lfs::core::hdr::ExportMode>(hdr_mode),
+                                                   .exposure_ev = hdr_exposure_ev,
+                                                   .tone = static_cast<lfs::core::hdr::ToneOperator>(hdr_tone)});
             }
         });
         callback_cleanup_.add([] { python::set_export_callback(nullptr); });

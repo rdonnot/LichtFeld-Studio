@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "py_splat_data.hpp"
+#include "core/hdr_sh.hpp"
 #include <nanobind/stl/optional.h>
 #include <stdexcept>
 #include <string_view>
@@ -180,6 +181,17 @@ namespace lfs::python {
                          "Maximum SH degree")
             .def_prop_ro("scene_scale", &PySplatData::scene_scale,
                          "Scene scale factor")
+            .def_prop_ro("is_hdr", &PySplatData::is_hdr,
+                         "True when the SH hold log radiance (an --hdr model or a lichtfeld_hdr PLY); see docs/hdr.md")
+            .def_prop_ro("hdr_scale", &PySplatData::hdr_scale,
+                         "HDR: the scene's P99 luminance s (natural display exposure 1/s); 0 when unknown or LDR")
+            .def_prop_ro("hdr_color_max", &PySplatData::hdr_color_max,
+                         "HDR: the absolute radiance cap the kernels used; 0 when unknown or LDR")
+            .def("set_hdr", &PySplatData::set_hdr, nb::arg("log_sh"), nb::arg("scale"), nb::arg("color_max"),
+                 "Declare how the SH are to be read (log radiance with scale s and cap). Does not convert values.")
+            .def("bake_hdr_to_ldr", &PySplatData::bake_hdr_to_ldr, nb::arg("exposure_ev") = 0.0f, nb::arg("tonemap") = "aces",
+                 "HDR -> a new LDR SplatData at exposure_ev (EV relative to 1/s) through tonemap "
+                 "(none, linear, filmic, hejl, aces, aces2, neutral); any viewer shows it. An LDR input is cloned.")
             .def_prop_ro("num_points", &PySplatData::num_points,
                          "Number of Gaussians")
 
@@ -213,4 +225,13 @@ namespace lfs::python {
                  "Raises if the model is renderer-backed.");
     }
 
+} // namespace lfs::python
+
+namespace lfs::python {
+    PySplatData PySplatData::bake_hdr_to_ldr(const float exposure_ev, const std::string& tonemap) const {
+        const auto tone = core::hdr::parse_tone_operator(tonemap);
+        if (!tone)
+            throw std::invalid_argument("tonemap must be one of: " + std::string(core::hdr::kToneOperatorNames));
+        return PySplatData(std::make_shared<core::SplatData>(core::hdr::bake_hdr_to_ldr(*data_, exposure_ev, *tone)));
+    }
 } // namespace lfs::python

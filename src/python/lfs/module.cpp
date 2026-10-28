@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "core/native_fs.hpp"
+#include "core/hdr_export_options.hpp"
 #include "preferences.hpp"
 #include <algorithm>
 #include <cmath>
@@ -2240,11 +2241,19 @@ NB_MODULE(lichtfeld, m) {
         "export_scene",
         [](int format, const std::string& path, const std::vector<std::string>& node_names, int sh_degree,
            bool rad_flip_y, bool rad_streamable, int spz_version, bool include_provenance,
-           int lod_levels, float lod_ratio, int chunk_count_k, float chunk_extent, int chunk_min_k, int kmeans_iterations) {
+           int lod_levels, float lod_ratio, int chunk_count_k, float chunk_extent, int chunk_min_k, int kmeans_iterations,
+           const std::string& hdr, float hdr_exposure_ev, const std::string& hdr_tonemap) {
             if (format >= 9 && format <= 12)
                 throw std::runtime_error("Use prepare_gallery_scene() to prepare a gallery upload.");
+            const auto hdr_mode = lfs::core::hdr::parse_export_mode(hdr);
+            if (!hdr_mode)
+                throw std::invalid_argument("hdr must be one of: " + std::string(lfs::core::hdr::kExportModeNames));
+            const auto hdr_tone = lfs::core::hdr::parse_tone_operator(hdr_tonemap);
+            if (!hdr_tone)
+                throw std::invalid_argument("hdr_tonemap must be one of: " + std::string(lfs::core::hdr::kToneOperatorNames));
             lfs::python::invoke_export(format, path, node_names, sh_degree, rad_flip_y, rad_streamable,
-                                       spz_version, include_provenance, lod_levels, lod_ratio, chunk_count_k, chunk_extent, chunk_min_k, kmeans_iterations);
+                                       spz_version, include_provenance, lod_levels, lod_ratio, chunk_count_k, chunk_extent, chunk_min_k, kmeans_iterations,
+                                       static_cast<int>(*hdr_mode), hdr_exposure_ev, static_cast<int>(*hdr_tone));
         },
         nb::arg("format"), nb::arg("path"), nb::arg("node_names"), nb::arg("sh_degree"),
         nb::arg("rad_flip_y") = false,
@@ -2258,7 +2267,11 @@ NB_MODULE(lichtfeld, m) {
         nb::arg("chunk_extent") = 16.0f,
         nb::arg("chunk_min_k") = 8,
         nb::arg("kmeans_iterations") = 10,
+        nb::arg("hdr") = "auto",
+        nb::arg("hdr_exposure_ev") = 0.0f,
+        nb::arg("hdr_tonemap") = "aces",
         "Export scene nodes to file or directory. Format: 0=PLY, 1=SOG, 2=SPZ, 3=HTML, 4=USD, 5=USDZ NuRec, 6=RAD, 7=COLMAP, 8=SSOG, 13=GLB. "
+        "HDR models: hdr = auto (PLY: linear radiance; others: refused) | linear | baked (LDR at hdr_exposure_ev through hdr_tonemap) | log (PLY only). "
         "For SSOG, path names a .ssog bundle or directory; lod_levels, lod_ratio, chunk_count_k, chunk_extent, chunk_min_k and kmeans_iterations control its LODs and chunks. "
         "spz_version is 3 (legacy gzip) or 4 (zstd, default) and is only used for SPZ. "
         "include_provenance (default true) writes a full provenance stamp into the format metadata slot; when false, a minimal build stamp is still embedded. "
