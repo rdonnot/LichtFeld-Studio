@@ -31,6 +31,7 @@ namespace lfs::core {
             file.read(reinterpret_cast<char*>(&header), sizeof(header));
             if (!file)
                 return std::unexpected("Invalid checkpoint: truncated header");
+            normalize_legacy_checkpoint_flags(header);
             if (auto validation = validate_checkpoint_header(header, file_size); !validation)
                 return std::unexpected(validation.error());
             return header;
@@ -67,6 +68,7 @@ namespace lfs::core {
             file.read(reinterpret_cast<char*>(&header), sizeof(header));
             if (!file)
                 return std::unexpected("Invalid checkpoint: truncated header");
+            normalize_legacy_checkpoint_flags(header);
             if (auto validation = validate_checkpoint_header(header, file_size);
                 !validation) {
                 return std::unexpected(validation.error());
@@ -75,6 +77,15 @@ namespace lfs::core {
         }
 
     } // namespace
+
+    void normalize_legacy_checkpoint_flags(CheckpointHeader& header) {
+        auto flags = static_cast<uint32_t>(header.flags);
+        if (header.version == CHECKPOINT_VERSION_HAS_POPSPA && (flags & LEGACY_HDR_BRACKET_STAGE_FLAG) != 0) {
+            flags = (flags & ~LEGACY_HDR_BRACKET_STAGE_FLAG) |
+                    static_cast<uint32_t>(CheckpointFlags::HAS_HDR_BRACKET_STAGE);
+            header.flags = static_cast<CheckpointFlags>(flags);
+        }
+    }
 
     std::expected<void, std::string> validate_checkpoint_header(
         const CheckpointHeader& header,

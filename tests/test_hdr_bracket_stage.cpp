@@ -379,6 +379,39 @@ TEST_F(HdrBracketStageTest, CheckpointRoundTripRestoresDeltas) {
     EXPECT_NO_THROW(HdrBracketStage::consume_checkpoint(again));
 }
 
+// B2: the hat weight is the channel mean of (min(z, 255 - z) / 127.5)^p: 1 at code 127.5, 0 at 0 and 255, 0.04 at
+// the gate's 250 / 5, 1 everywhere at p = 0; UInt8 codes and Float32 [0,1] agree.
+TEST_F(HdrBracketStageTest, HatWeightMatchesHostReference) {
+    const auto fx = load_fixture();
+    HdrBracketStage stage(fx.crf, HdrBracketStage::Config{});
+    const std::vector<unsigned char> codes = {128, 0, 255, 250, 5, 64, 192, 100};
+    std::vector<float> gt_f(3 * codes.size());
+    for (int c = 0; c < 3; ++c)
+        for (size_t i = 0; i < codes.size(); ++i)
+            gt_f[static_cast<size_t>(c) * codes.size() + i] = static_cast<float>(codes[i]);
+    const auto shape = TensorShape({3, 2, 4});
+    auto gt_u8 = Tensor::from_vector(gt_f, shape, Device::CUDA).to(DataType::UInt8);
+    std::vector<float> gt_unit(gt_f);
+    for (auto& v : gt_unit)
+        v /= 255.0f;
+    auto gt_float = Tensor::from_vector(gt_unit, shape, Device::CUDA);
+    for (const double p : {1.0, 2.0, 0.0}) {
+        const auto w_u8 = stage.hat_weight(gt_u8, static_cast<float>(p)).to_vector();
+        const auto w_f = stage.hat_weight(gt_float, static_cast<float>(p)).to_vector();
+        ASSERT_EQ(w_u8.size(), codes.size());
+        for (size_t i = 0; i < codes.size(); ++i) {
+            const double expect = lfs::training::kernels::hdr_bracket_hat_host(codes[i], p);
+            EXPECT_NEAR(w_u8[i], expect, 1e-5) << "code " << int(codes[i]) << " p " << p;
+            EXPECT_NEAR(w_f[i], expect, 1e-4) << "code " << int(codes[i]) << " p " << p;
+        }
+    }
+    EXPECT_NEAR(lfs::training::kernels::hdr_bracket_hat_host(128, 1.0), 127.0 / 127.5, 1e-12); // the peak is 127.5
+    EXPECT_DOUBLE_EQ(lfs::training::kernels::hdr_bracket_hat_host(0, 1.0), 0.0);
+    EXPECT_DOUBLE_EQ(lfs::training::kernels::hdr_bracket_hat_host(255, 1.0), 0.0);
+    EXPECT_NEAR(lfs::training::kernels::hdr_bracket_hat_host(250, 1.0), 5.0 / 127.5, 1e-12);
+    EXPECT_DOUBLE_EQ(lfs::training::kernels::hdr_bracket_hat_host(7, 0.0), 1.0);
+}
+
 TEST_F(HdrBracketStageTest, CrfLoadRequiresTheExifAnchor) {
     const auto dir = std::filesystem::temp_directory_path() / "lfs_hdr_bracket_crf_test";
     std::filesystem::create_directories(dir);

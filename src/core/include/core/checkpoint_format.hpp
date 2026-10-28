@@ -57,6 +57,11 @@ namespace lfs::core {
         uint64_t params_json_size = 0;
     };
 
+    // HDR fork: checkpoints written between aced989e9 and 176da4003 stamped HAS_HDR_BRACKET_STAGE as 1 << 5 (where
+    // upstream's next flag would land); the bit moved to 1 << 30. Readers map the legacy bit before validating.
+    constexpr uint32_t LEGACY_HDR_BRACKET_STAGE_FLAG = 1u << 5;
+    LFS_CORE_API void normalize_legacy_checkpoint_flags(CheckpointHeader& header);
+
     LFS_CORE_API std::expected<void, std::string> validate_checkpoint_header(
         const CheckpointHeader& header,
         uint64_t file_size);

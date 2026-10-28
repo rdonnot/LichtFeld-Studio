@@ -215,6 +215,11 @@ namespace lfs::training {
         return z;
     }
 
+    const lfs::core::Tensor& HdrBracketStage::hat_weight(const lfs::core::Tensor& gt, const float p) {
+        kernels::hdr_bracket_hat_weight(gt, p, hat_);
+        return hat_;
+    }
+
     void HdrBracketStage::backward_in_place(lfs::core::Tensor& grad, const int uid) {
         if (saved_uid_ != uid || !saved_v_.is_valid() || !saved_dzdu_.is_valid())
             throw std::logic_error(std::format("HdrBracketStage::backward_in_place: no forward saved for frame {}", uid));

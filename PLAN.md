@@ -360,16 +360,53 @@ blamed the one-sided gate and chroma subsampling; both are contradicted by the d
 
 What this means for the plan: the bracket path works end to end (units, EXIF anchor, gate, checkpoint, eval) and its
 exposure model is sound; at equal iterations it is ~1.7 dB behind the merge on a synthetic tripod set where the
-merge has no ghosting to lose. The improvement round (in this order, each its own commit + a 7000-iteration
-`learn` run against `out/m3_learn`): (B1) coverage diagnostic — render training positions from the project and
-repeat `bias.py` (expect ≈ 1.00), dump accumulated alpha of a held-out view (expect 1−α ≈ 0.02–0.03 vs ≈ 0.01 on
-M2); if confirmed, a random background in radiance units (uniform in [0, s]) during bracket training behind a
-flag; (B2) Debevec's hat weight w(z) as a `roi_weight` on the loss and on the error map that drives growth; (B3)
-noise-aware densification — the error map accumulated per POSITION across the bracket's frames (independent noise
-cancels) or scaled by the code's expected noise σ(z), and `max_cap` near M2's ~1 M for the like-for-like run.
-`--hdr-crf ppisp` only if a real capture's Debevec curve is too noisy. LDR bit-identity: `ldr_reeval.py` on
-`baseline_a` with this binary — "metrics: identical", "eval PNGs: 16 compared, identical" (logged as M3 /
-m3_reeval).
+merge has no ghosting to lose.
+
+**Improvement round — measured** (hdr-m3, 2026-10-28, commits `21ef75c4e` B1+B2, `e6f69a6aa` B3; every run the
+`m3_learn` command — 7000 it, `--test-every 8 --test-by-position`, `--hdr-exposure learn` — plus the flags named,
+scored by `bracket_eval.py`, rows in `out/metrics.csv`; M2 = `out/m2_hdr7k` rescored by the same script):
+
+| run | flags | −4 EV | −2 EV | 0 EV | +2 EV | +4 EV | **ldr_psnr_mean** | μ-law vs merge | μ-law vs truth | #GS |
+|---|---|---|---|---|---|---|---|---|---|---|
+| M2 `m2_hdr7k` (target) | merged EXRs | 33.29 | 33.13 | 31.34 | 30.33 | 32.66 | **32.15** | 36.48 | 33.06 | 965 k |
+| M3 baseline `m3_learn` | — | 32.33 | 31.59 | 29.15 | 27.80 | 31.04 | **30.38** | 34.19 | 32.26 | 1 009 k |
+| B1 `m3_b1_bg` | `--hdr-bracket-bg 1` | 32.40 | 32.05 | 30.41 | 29.98 | 31.23 | **31.21** | 36.10 | 34.01 | 959 k |
+| B2 `m3_b2_hat` | B1 + `--hdr-bracket-hat 1` | 31.55 | 31.01 | 29.57 | 29.71 | 31.85 | **30.74** | 34.18 | 30.84 | 901 k |
+| B2 `m3_b2_hat05` | B1 + `--hdr-bracket-hat 0.5` | 31.82 | 31.35 | 29.93 | 29.92 | 31.87 | **30.98** | 35.55 | 32.47 | 905 k |
+| B3 `m3_b3` | B1 + `--hdr-bracket-err-ema 0.4 --max-cap 965127` | 32.45 | 31.89 | 30.31 | 29.97 | 31.69 | **31.26** | 35.06 | 34.93 | 190 k |
+| B3 `m3_b3_ema02` | B1 + `--hdr-bracket-err-ema 0.2 --max-cap 965127` | 32.55 | 31.92 | 30.36 | 30.04 | 31.47 | **31.27** | 35.27 | 34.98 | 190 k |
+| B3 `m3_b3_cap5m` | B1 + `--hdr-bracket-err-ema 0.4` (default cap) | 32.45 | 32.06 | 30.34 | 29.90 | 31.30 | **31.21** | 36.05 | 34.04 | 960 k |
+
+What was built: (B1) `hdr_bracket_bg` — a random per-pixel background in radiance units, uniform in [0, bg·s] per
+channel, every step of bracket training (`launch_random_background` took a scale; `LFS_EVAL_DUMP_ALPHA=1` writes
+the eval renders' accumulated alpha); (B2) `hdr_bracket_hat` — Debevec's hat of the frame's JPEG codes, channel
+mean, to the power p, as the per-pixel weight on the loss AND on the growth error map through the `roi_weight`
+path, the loss divided by H·W·(the set's mean hat, 0.299 here) rather than the frame's weight sum; (B3)
+`hdr_bracket_err_ema` — the error map that drives MRNF growth kept per camera POSITION (`position_key`) as an EMA
+across the bracket's frames, anchored after the ROI multiply and before MRNF's mean normalisation. All three only
+act under `--hdr-brackets`; a legacy `1 << 5` checkpoint bit is mapped to `1 << 30` on read.
+
+**Verdict.**
+1. **Done-when still NOT met: best 31.27 dB vs 32.15, −0.9 dB** (from −1.8). B1 is the whole gain (+0.83 dB,
+   μ-law vs truth 32.26 → 34.01, now ABOVE M2's 33.06): the ~3 % held-out radiance deficit was coverage, as the
+   bias scan said, and the random radiance background removes most of it (render/merge median gain 1.035 → 1.031).
+2. **B2 hurts, monotonically in p** (31.21 → 30.98 → 30.74; μ-law vs truth 34.0 → 32.5 → 30.8): the toe and
+   shoulder codes the hat silences are the ONLY frames that see the lamp and the alcove, and the mid-range-weighted
+   error map grows where nothing was missing. Default is now 0; the flag stays for a real capture's noisy curve.
+3. **B3's EMA has no effect** (31.21 / 960 k at EMA 0.4 with the default cap — B1 to the second decimal): MRNF's
+   accumulation over visits already averages what one position's frames would, and a positive error map keeps its
+   noise floor under any averaging. What the like-for-like cap DID show: MRNF's growth follows `max_cap` (190 k at
+   965 k, 960 k at 5 M, the cap's ratio), and **a fifth of the splats scores the same LDR PSNR and the best truth
+   score of the round (34.9)** — the 770 k extra splats of the default run fit noise, as the 14 000-iteration run
+   suggested, and the bracket model's ceiling at 7000 it is not its splat budget.
+4. pos_000 is a coverage outlier for BOTH models (M2 20.4 / 16.3 dB at 0 / +2 EV, B1 21.5 / 20.6): the remaining
+   gap is on the four well-covered positions, where M2 leads by 1–2.5 dB at every EV — one frame per visit teaching
+   one band of a noisy JPEG against a five-frame average. Closing it needs information, not weighting: more
+   iterations (14 k gave +0.9 dB), or the merge as a prior — the M2 path stays the recommendation for tripod sets.
+5. Defaults after the round: `hdr_bracket_bg 1` (on), `hdr_bracket_hat 0`, `hdr_bracket_err_ema 0`. LDR bit-identity
+   held at every step (`ldr_reeval.py` on `baseline_a`: "metrics: identical", "eval PNGs: 16 compared, identical" —
+   rows `m3_reeval_b2`, `m3_reeval_b3`). Per-position numbers: `out/<run>.eval`.
+
 
 **Deviations from the design.** (1) `eval_split_mask` lives in a header (`eval_split.hpp`), not `training_setup.hpp`,
 so `dataset.hpp` and the test can include it without the trainer. (2) The Adam step and the dδ reduction stay on
@@ -386,7 +423,7 @@ per-pixel log ratio (the geometric mean, printed beside it, is dominated by the 
 same render).
 
 **Tests.** `lichtfeld_tests` filter `EvalSplitTest.*:HdrBracketStageTest.*:TrainingParametersTest.*:
-CheckpointVersionTest.*:HdrColorChainTest.*`: 58 passed (build/tests of this worktree). ctest names
+CheckpointVersionTest.*:HdrColorChainTest.*`: 59 passed (build/tests of this worktree; + `HatWeightMatchesHostReference`). ctest names
 `lichtfeld.hdr_eval_split`, `lichtfeld.hdr_bracket_stage`.
 
 ---

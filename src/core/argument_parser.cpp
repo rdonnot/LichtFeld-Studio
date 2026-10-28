@@ -107,6 +107,9 @@ namespace lfs::core::args {
             OptimizationCliBinding{"--hdr-exposure-prior", "hdr_exposure_prior", Float},
             OptimizationCliBinding{"--hdr-exposure-lr", "hdr_exposure_lr", Float},
             OptimizationCliBinding{"--hdr-exposure-max-delta", "hdr_exposure_max_delta", Float},
+            OptimizationCliBinding{"--hdr-bracket-bg", "hdr_bracket_bg", Float},
+            OptimizationCliBinding{"--hdr-bracket-hat", "hdr_bracket_hat", Float},
+            OptimizationCliBinding{"--hdr-bracket-err-ema", "hdr_bracket_err_ema", Float},
             OptimizationCliBinding{"--eval", "enable_eval", Bool},
             OptimizationCliBinding{"--eval-all", "eval_all", Bool},
             OptimizationCliBinding{"--eval-flip", "eval_flip", Bool},
@@ -964,6 +967,9 @@ namespace {
             ::args::ValueFlag<float> hdr_exposure_prior(rendering_group, "weight", lfs::core::args::optimization_cli_help("--hdr-exposure-prior"), {"hdr-exposure-prior"});
             ::args::ValueFlag<float> hdr_exposure_lr(rendering_group, "lr", lfs::core::args::optimization_cli_help("--hdr-exposure-lr"), {"hdr-exposure-lr"});
             ::args::ValueFlag<float> hdr_exposure_max_delta(rendering_group, "stops", lfs::core::args::optimization_cli_help("--hdr-exposure-max-delta"), {"hdr-exposure-max-delta"});
+            ::args::ValueFlag<float> hdr_bracket_bg(rendering_group, "fraction", lfs::core::args::optimization_cli_help("--hdr-bracket-bg"), {"hdr-bracket-bg"});
+            ::args::ValueFlag<float> hdr_bracket_hat(rendering_group, "power", lfs::core::args::optimization_cli_help("--hdr-bracket-hat"), {"hdr-bracket-hat"});
+            ::args::ValueFlag<float> hdr_bracket_err_ema(rendering_group, "weight", lfs::core::args::optimization_cli_help("--hdr-bracket-err-ema"), {"hdr-bracket-err-ema"});
 
             // =============================================================================
             // OUTPUT OPTIONS
@@ -1692,6 +1698,9 @@ namespace {
                                         hdr_exposure_prior_val = cli_option_present({"--hdr-exposure-prior"}) ? std::optional<float>(::args::get(hdr_exposure_prior)) : std::optional<float>(),
                                         hdr_exposure_lr_val = cli_option_present({"--hdr-exposure-lr"}) ? std::optional<float>(::args::get(hdr_exposure_lr)) : std::optional<float>(),
                                         hdr_exposure_max_delta_val = cli_option_present({"--hdr-exposure-max-delta"}) ? std::optional<float>(::args::get(hdr_exposure_max_delta)) : std::optional<float>(),
+                                        hdr_bracket_bg_val = cli_option_present({"--hdr-bracket-bg"}) ? std::optional<float>(::args::get(hdr_bracket_bg)) : std::optional<float>(),
+                                        hdr_bracket_hat_val = cli_option_present({"--hdr-bracket-hat"}) ? std::optional<float>(::args::get(hdr_bracket_hat)) : std::optional<float>(),
+                                        hdr_bracket_err_ema_val = cli_option_present({"--hdr-bracket-err-ema"}) ? std::optional<float>(::args::get(hdr_bracket_err_ema)) : std::optional<float>(),
                                         undistort_flag = bool(undistort),
                                         enable_sparsity_flag = bool(enable_sparsity),
                                         invert_masks_flag = bool(invert_masks),
@@ -1895,6 +1904,9 @@ namespace {
                 setVal(hdr_exposure_prior_val, opt.hdr_exposure_prior);
                 setVal(hdr_exposure_lr_val, opt.hdr_exposure_lr);
                 setVal(hdr_exposure_max_delta_val, opt.hdr_exposure_max_delta);
+                setVal(hdr_bracket_bg_val, opt.hdr_bracket_bg);
+                setVal(hdr_bracket_hat_val, opt.hdr_bracket_hat);
+                setVal(hdr_bracket_err_ema_val, opt.hdr_bracket_err_ema);
                 setFlag(undistort_flag, opt.undistort);
                 setFlag(enable_sparsity_flag, opt.enable_sparsity);
                 if (no_error_map_flag)
@@ -2015,6 +2027,9 @@ namespace {
                 note_opt("hdr_exposure_prior", hdr_exposure_prior_val.has_value());
                 note_opt("hdr_exposure_lr", hdr_exposure_lr_val.has_value());
                 note_opt("hdr_exposure_max_delta", hdr_exposure_max_delta_val.has_value());
+                note_opt("hdr_bracket_bg", hdr_bracket_bg_val.has_value());
+                note_opt("hdr_bracket_hat", hdr_bracket_hat_val.has_value());
+                note_opt("hdr_bracket_err_ema", hdr_bracket_err_ema_val.has_value());
                 note_opt("undistort", undistort_flag);
                 note_opt("enable_sparsity", enable_sparsity_flag);
                 note_opt("use_error_map", no_error_map_flag);

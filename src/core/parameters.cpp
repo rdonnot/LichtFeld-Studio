@@ -1067,6 +1067,12 @@ namespace lfs::core {
                 return std::format("hdr_exposure_lr must be positive (got {})", hdr_exposure_lr);
             if (!std::isfinite(hdr_exposure_max_delta) || hdr_exposure_max_delta <= 0.f)
                 return std::format("hdr_exposure_max_delta must be positive (got {})", hdr_exposure_max_delta);
+            if (!std::isfinite(hdr_bracket_bg) || hdr_bracket_bg < 0.f)
+                return std::format("hdr_bracket_bg must be finite and >= 0 (got {})", hdr_bracket_bg);
+            if (!std::isfinite(hdr_bracket_hat) || hdr_bracket_hat < 0.f)
+                return std::format("hdr_bracket_hat must be finite and >= 0 (got {})", hdr_bracket_hat);
+            if (!std::isfinite(hdr_bracket_err_ema) || hdr_bracket_err_ema < 0.f || hdr_bracket_err_ema > 1.f)
+                return std::format("hdr_bracket_err_ema must be in [0, 1] (got {})", hdr_bracket_err_ema);
             if (use_exposure_correction &&
                 (use_bilateral_grid || use_ppisp || ppisp_use_controller || ppisp_freeze_from_sidecar)) {
                 return "use_exposure_correction cannot be combined with use_bilateral_grid, "

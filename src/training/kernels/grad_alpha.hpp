@@ -154,11 +154,13 @@ namespace lfs::training::kernels {
         int dst_H, int dst_W,
         cudaStream_t stream = nullptr);
 
-    // Generate random per-pixel RGB background [3, H, W] with values in [0, 1]
+    // Generate random per-pixel RGB background [3, H, W] with values in [0, scale] (scale = 1: the LDR default;
+    // the HDR bracket path passes a radiance scale)
     void launch_random_background(
         float* output,
         int H, int W,
         uint64_t seed,
-        cudaStream_t stream = nullptr);
+        cudaStream_t stream = nullptr,
+        float scale = 1.0f);
 
 } // namespace lfs::training::kernels

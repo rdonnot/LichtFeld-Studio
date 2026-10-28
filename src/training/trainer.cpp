@@ -69,6 +69,7 @@
 #include "training/kernels/camera_loss_heatmap.cuh"
 #include "training/kernels/depth_loss.hpp"
 #include "training/kernels/grad_alpha.hpp"
+#include "training/kernels/hdr_bracket.hpp"
 #include "training/kernels/mask_preprocess.hpp"
 #include "training/kernels/mrnf_kernels.hpp"
 #include "training/kernels/normal_consistency_loss.hpp"
@@ -1046,6 +1047,7 @@ namespace lfs::training {
         roi_weight_map_ = {};
         densification_ssim_workspace_ = {};
         densification_error_map_ = {};
+        hdr_bracket_position_error_.clear();
         clearEdgeWeightCache();
         clear_thin_structure_cache();
         gradient_residual_workspace_ = {};
@@ -1819,7 +1821,9 @@ namespace lfs::training {
             user_masks_photometric && normal_terms_on);
 
         Tensor photometric_weight = base_photometric_weight;
-        float base_denominator = 0.0f;
+        // B2: the bracket hat is a weight, not a mask — divide by the pixel count x the set's mean hat, so a frame
+        // whose pixels mostly sit in the toe teaches less than one whose pixels sit mid-range.
+        float base_denominator = has_roi_weight ? hdr_bracket_loss_denominator_ : 0.0f;
         if (structure_map.is_valid()) {
             kernels::structure_photometric_weight(
                 structure_map, base_photometric_weight, thin_structure_weight_buffer_,
@@ -2913,7 +2917,8 @@ namespace lfs::training {
     // all channels of a few positions' whole brackets. The merge's P99 is the same statistic plus the lower-bound
     // pixels, so s should land within 25 % of the merged EXRs' (2421 on smoke_hdr). Also the per-EV gate fractions.
     std::expected<float, std::string> Trainer::measure_hdr_scale_brackets(
-        const std::vector<std::shared_ptr<lfs::core::Camera>>& cameras, const HdrBracketStage& stage) {
+        const std::vector<std::shared_ptr<lfs::core::Camera>>& cameras, const HdrBracketStage& stage,
+        float* hat_mean) {
         if (cameras.empty())
             return std::unexpected("HDR brackets: no training image to measure the radiance scale from");
         // Up to 4 positions spread across the (name-sorted) set, every frame of each.
@@ -2945,6 +2950,8 @@ namespace lfs::training {
         };
         std::map<int, GateCount> gate_by_ev; // key: round(b * 100)
         std::vector<float> luminance;
+        double hat_sum = 0.0;
+        size_t hat_count = 0;
         for (const auto& cam : sample) {
             auto [data, width, height, channels] = lfs::core::load_image(cam->image_path());
             if (!data || width <= 0 || height <= 0 || channels < 3) {
@@ -2964,6 +2971,8 @@ namespace lfs::training {
                 for (int c = 0; c < 3; ++c) {
                     gate.high += px[c] >= 250;
                     gate.low += px[c] <= 5;
+                    hat_sum += kernels::hdr_bracket_hat_host(static_cast<double>(px[c]), 1.0);
+                    ++hat_count;
                 }
                 if (px[0] > 5 && px[0] < 250 && px[1] > 5 && px[1] < 250 && px[2] > 5 && px[2] < 250) {
                     const double r = exposure[0][px[0]] * inv_gain;
@@ -2995,6 +3004,12 @@ namespace lfs::training {
             return std::unexpected(std::format("HDR brackets: degenerate radiance scale {}", s));
         LOG_INFO("HDR brackets: s measured on {} JPEGs of {} positions ({} unsaturated samples)",
                  sample.size(), std::min(position_order.size(), (position_order.size() + stride - 1) / stride), luminance.size());
+        if (hat_count > 0) {
+            const float mean_hat = static_cast<float>(hat_sum / static_cast<double>(hat_count));
+            LOG_INFO("HDR brackets: mean Debevec hat weight over the sampled channel codes {:.3f}", mean_hat);
+            if (hat_mean)
+                *hat_mean = mean_hat;
+        }
         return s;
     }
 
@@ -3239,7 +3254,8 @@ namespace lfs::training {
                     return std::unexpected(stage.error());
             }
             if (params_.optimization.hdr_brackets && params_.optimization.hdr_scale <= 0.0f) {
-                const auto scale = measure_hdr_scale_brackets(train_dataset_->get_cameras(), *hdr_bracket_stage_);
+                const auto scale = measure_hdr_scale_brackets(train_dataset_->get_cameras(), *hdr_bracket_stage_,
+                                                              &hdr_bracket_hat_mean_);
                 if (!scale)
                     return std::unexpected(scale.error());
                 params_.optimization.hdr_scale = *scale;
@@ -3948,6 +3964,7 @@ namespace lfs::training {
         normal_prior_depth_scalar_ = {};
         densification_ssim_workspace_ = {};
         densification_error_map_ = {};
+        hdr_bracket_position_error_.clear();
         clearEdgeWeightCache();
         clear_thin_structure_cache();
         gradient_residual_workspace_ = {};
@@ -6301,7 +6318,7 @@ namespace lfs::training {
         return resized;
     }
 
-    lfs::core::Tensor Trainer::get_random_background_for_camera(int width, int height, int iteration) {
+    lfs::core::Tensor Trainer::get_random_background_for_camera(int width, int height, int iteration, const float scale) {
         const size_t required_size = 3 * static_cast<size_t>(height) * static_cast<size_t>(width);
 
         if (!random_bg_buffer_.is_valid() || random_bg_buffer_.numel() != required_size) {
@@ -6315,7 +6332,8 @@ namespace lfs::training {
             random_bg_buffer_.ptr<float>(),
             height, width,
             static_cast<uint64_t>(iteration),
-            random_bg_buffer_.stream());
+            random_bg_buffer_.stream(),
+            scale);
 
         return random_bg_buffer_;
     }
@@ -6590,6 +6608,14 @@ namespace lfs::training {
                     LFS_VRAM_SCOPE("train.random_background");
                     LOG_VRAM_DIFF("train.random_background");
                     bg_image = get_random_background_for_camera(cam->image_width(), cam->image_height(), iter);
+                } else if (step_params.hdr_brackets && step_params.hdr_bracket_bg > 0.0f && step_params.hdr_scale > 0.0f) {
+                    // HDR fork (PLAN.md M3 improvement round, B1): bracket training composites every step over a
+                    // random per-pixel background in radiance units, [0, hdr_bracket_bg * s] per channel, so
+                    // accumulated alpha < 1 is an error on the training views as well. Evaluation keeps the solid one.
+                    LFS_VRAM_SCOPE("train.random_background");
+                    LOG_VRAM_DIFF("train.random_background");
+                    bg_image = get_random_background_for_camera(cam->image_width(), cam->image_height(), iter,
+                                                                step_params.hdr_bracket_bg * step_params.hdr_scale);
                 }
 
                 // Per-camera maps cached from the target must not see a per-iteration background.
@@ -7263,6 +7289,22 @@ namespace lfs::training {
                             roi_stream);
                         roi_weight = roi_weight_map_;
                         roi_weight.sync_to_stream(lfs::core::getCurrentCUDAStream());
+                    }
+                    // HDR fork (PLAN.md M3 improvement round, B2): Debevec's hat of this frame's JPEG weights the
+                    // photometric loss and (through the same roi_weight) the densification error map.
+                    hdr_bracket_loss_denominator_ = 0.0f;
+                    if (step_params.hdr_brackets && hdr_bracket_stage_ && step_params.hdr_bracket_hat > 0.0f &&
+                        gt_image.ndim() == 3 && gt_image.shape()[0] == 3) {
+                        const auto& hat = hdr_bracket_stage_->hat_weight(gt_image, step_params.hdr_bracket_hat);
+                        if (roi_weight.is_valid() && roi_weight.shape() == hat.shape()) {
+                            hat.sync_to_stream(roi_weight.stream());
+                            roi_weight.mul_(hat);
+                        } else {
+                            roi_weight = hat;
+                            roi_weight.sync_to_stream(lfs::core::getCurrentCUDAStream());
+                        }
+                        hdr_bracket_loss_denominator_ = static_cast<float>(hat.numel()) *
+                                                        std::max(hdr_bracket_hat_mean_, 1e-3f);
                     }
 
                     current_phase = StepPhase::Loss;
@@ -8156,6 +8198,26 @@ namespace lfs::training {
                         if (tile_error_map.is_valid() && roi_weight.is_valid() &&
                             tile_error_map.numel() == roi_weight.numel()) {
                             tile_error_map.mul_(roi_weight.reshape(tile_error_map.shape()));
+                        }
+
+                        // HDR fork (PLAN.md M3 improvement round, B3): a bracket's frames share a pose, so the
+                        // growth credit of a visit is the error map accumulated over the POSITION's frames (an
+                        // EMA, weight hdr_bracket_err_ema on this frame): a frame's own shot noise and 8-bit
+                        // steps, independent between frames, average out, and every visit credits the whole
+                        // bracket's error, not one frame's unclipped band. Anchored before the mean
+                        // normalisation so the map's scale stays MRNF's. Off (0) for every non-bracket run.
+                        if (tile_error_map.is_valid() && step_params.hdr_brackets &&
+                            step_params.hdr_bracket_err_ema > 0.0f && cam) {
+                            const float a = std::min(step_params.hdr_bracket_err_ema, 1.0f);
+                            auto& acc = hdr_bracket_position_error_[std::string(position_key(cam->image_name()))];
+                            if (!acc.is_valid() || acc.shape() != tile_error_map.shape()) {
+                                acc = tile_error_map.clone();
+                            } else {
+                                acc.sync_to_stream(tile_error_map.stream());
+                                acc.mul_(1.0f - a);
+                                acc.add_(tile_error_map.mul(a));
+                                tile_error_map.copy_from(acc);
+                            }
                         }
 
                         if (tile_error_map.is_valid() && params_.optimization.densify_structure_weight > 0.0f) {
