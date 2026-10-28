@@ -296,6 +296,7 @@ void main(
     uint3 groupID : SV_GroupID,
     uniform Uniforms uniforms
 ) {
+    g_blend_color_max = lfs_blend_color_max(uniforms);
     const uint32_t H = uniforms.image_height;
     const uint32_t W = uniforms.image_width;
     const uint grid_width = uniforms.grid_width;

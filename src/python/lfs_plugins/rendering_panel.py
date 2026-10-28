@@ -4,6 +4,7 @@
 
 import math
 import os
+import time
 
 import lichtfeld as lf
 
@@ -48,6 +49,23 @@ def _mesh_wireframe_supported():
     return bool(_vulkan_capabilities().get("mesh_wireframe", False))
 
 
+def _scene_has_hdr_model() -> bool:
+    """HDR fork (M4): True when a visible splat node holds log-radiance SH (SplatData.is_hdr)."""
+    try:
+        scene = lf.get_scene()
+        if scene is None:
+            return False
+        for node in scene.get_nodes():
+            if node.type != lf.scene.NodeType.SPLAT:
+                continue
+            data = node.splat_data()
+            if data is not None and bool(getattr(data, "is_hdr", False)):
+                return True
+    except (RuntimeError, AttributeError):
+        return False
+    return False
+
+
 def _mesh_wide_lines_supported():
     return bool(_vulkan_capabilities().get("wide_lines", False))
 
@@ -69,12 +87,13 @@ BOOL_PROPS = [
     "mesh_wireframe", "mesh_backface_culling", "mesh_shadow_enabled",
     "apply_appearance_correction", "ppisp_vignette_enabled",
     "lod_enabled", "lod_debug_mode",
+    "hdr_display", "hdr_false_color",
 ]
 
 SLIDER_PROPS = [
     "selection_outline_opacity", "selection_outline_width", "selection_outline_threshold",
     "axes_size", "grid_opacity", "camera_frustum_scale", "voxel_size",
-    "focal_length_mm", "render_scale", "color_exposure", "environment_exposure", "environment_rotation_degrees",
+    "focal_length_mm", "render_scale", "color_exposure", "hdr_exposure_ev", "environment_exposure", "environment_rotation_degrees",
     "mesh_wireframe_width", "mesh_light_intensity", "mesh_ambient",
     "ppisp_exposure", "ppisp_vignette_strength", "ppisp_gamma_multiplier",
     "ppisp_gamma_red", "ppisp_gamma_green", "ppisp_gamma_blue",
@@ -95,6 +114,7 @@ SCRUB_FIELD_DEFS = {
     "focal_length_mm": ScrubFieldSpec(10.0, 200.0, 0.1, "%.1f"),
     "render_scale": ScrubFieldSpec(0.25, 1.0, 0.01, "%.2f"),
     "color_exposure": ScrubFieldSpec(0.1, 8.0, 0.01, "%.2f"),
+    "hdr_exposure_ev": ScrubFieldSpec(-12.0, 12.0, 0.05, "%.2f"),
     "environment_exposure": ScrubFieldSpec(-6.0, 6.0, 0.01, "%.2f"),
     "environment_rotation_degrees": ScrubFieldSpec(-180.0, 180.0, 0.1, "%.1f"),
     "mesh_wireframe_width": ScrubFieldSpec(0.5, 5.0, 0.01, "%.2f"),
@@ -194,6 +214,9 @@ LOCALE_KEY = {
     "environment_map_path": "main_panel.environment_map_path",
     "color_exposure": "main_panel.color_exposure",
     "color_tonemapping": "main_panel.color_tonemapping",
+    "hdr_exposure_ev": "main_panel.hdr_exposure_ev",
+    "hdr_false_color": "main_panel.hdr_false_color",
+    "hdr_display": "main_panel.hdr_display",
     "environment_exposure": "main_panel.environment_exposure",
     "environment_rotation_degrees": "main_panel.environment_rotation",
     "camera_metrics_mode": "main_panel.camera_metrics",
@@ -311,6 +334,8 @@ class RenderingPanel(Panel):
         self._color_edit_prop = None
         self._color_edit_group = None
         self._selection_groups = SelectionGroupsSection(self._show_group_color_picker)
+        self._hdr_model = False
+        self._hdr_model_checked_at = 0.0
         self._collapsed = set(RENDERING_INITIALLY_COLLAPSED)
         self._popup_el = None
         self._doc = None
@@ -480,6 +505,7 @@ class RenderingPanel(Panel):
                     lambda v: self._set_ppisp_mode(v))
 
         model.bind_func("mesh_wireframe_supported", _mesh_wireframe_supported)
+        model.bind_func("hdr_model", lambda: bool(self._hdr_model))
         model.bind_func("mesh_wide_lines_supported", _mesh_wide_lines_supported)
 
         all_props = BOOL_PROPS + SLIDER_PROPS + SELECT_PROPS + [
@@ -647,6 +673,7 @@ class RenderingPanel(Panel):
             return False
 
         dirty = False
+        dirty |= self._refresh_hdr_model()
         if not getattr(s, "selection_outline", False) and self._color_edit_prop == "selection_outline_color":
             self._hide_picker()
             dirty = True
@@ -672,6 +699,20 @@ class RenderingPanel(Panel):
         dirty |= self._scrub_fields.sync_all()
         dirty |= self._selection_groups.sync(visible=self._selection_section_expanded())
         return dirty
+
+    def _refresh_hdr_model(self, force: bool = False) -> bool:
+        """Re-read whether an HDR model is in the scene (throttled: a few node reads, every half second)."""
+        now = time.monotonic()
+        if not force and now - self._hdr_model_checked_at < 0.5:
+            return False
+        self._hdr_model_checked_at = now
+        value = _scene_has_hdr_model()
+        if value == self._hdr_model:
+            return False
+        self._hdr_model = value
+        if self._handle:
+            self._handle.dirty("hdr_model")
+        return True
 
     def _environment_state_snapshot(self):
         settings = lf.get_render_settings()
@@ -878,6 +919,7 @@ class RenderingPanel(Panel):
         self._browse_environment_map()
 
     def on_scene_changed(self, doc):
+        self._refresh_hdr_model(force=True)
         del doc
         if not self._handle:
             return False

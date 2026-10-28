@@ -10,11 +10,12 @@
 #include "core/cuda_error.hpp"
 
 #include <cmath>
+#include <cstdint>
 #include <glm/glm.hpp>
 
 #define LFS_COLOR_INLINE __device__ __forceinline__
 #define LFS_COLOR_VEC3 glm::vec3
-#define LFS_COLOR_UINT unsigned int
+#define LFS_COLOR_UINT std::uint32_t // one token: the .inc uses it as a functional cast
 #define LFS_COLOR_MIX glm::mix
 using glm::clamp; // the .inc calls clamp() unqualified; CUDA has no scalar clamp of its own
 #include "display_color.inc"
@@ -64,10 +65,9 @@ namespace lfs::core::hdr::cuda {
                                                 linear_radiance(*g, color_max, log_color_max),
                                                 linear_radiance(*b, color_max, log_color_max));
             if (mode == 2 || mode == 3) {
-                // Mode 0 of lfsDisplayTone returns the colour untouched (no exposure); a bake always
-                // exposes, so "none" is "linear" here.
-                c = lfsDisplayTone(c, tone == 0u ? 1u : tone, exposure);
-                c = lfsSrgbEncode(c); // display_color.inc: the same OETF as the viewer
+                // display_color.inc: the viewer's own HDR chain (exposure -> tone, "none" = "linear" ->
+                // sRGB OETF), one definition for the viewer (M4) and this bake (M5).
+                c = lfsDisplayHdr(c, tone, exposure);
             }
             *r = c.x;
             *g = c.y;

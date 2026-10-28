@@ -206,6 +206,11 @@ namespace lfs::rendering {
         float color_exposure = 1.0f;
         int color_tonemapping = 0;
         int splat_render_profile = 0; // 0: Studio, 1: standard portal
+        // HDR fork (M4): an HDR model (SplatData::is_hdr) is shown as radiance * 2^EV / s through the tone
+        // operator and the sRGB OETF; hdr_display = false shows its SH as an LDR model would (debug).
+        bool hdr_display = true;
+        float hdr_exposure_ev = 0.0f;
+        bool hdr_false_color = false;
 
         float scaling_modifier = 1.0f;
         bool antialiasing = false;
@@ -274,6 +279,9 @@ namespace lfs::rendering {
         PointCloudFilterState filters;
         PointCloudOverlayState overlay;
         bool transparent_background = false;
+        // HDR fork (M4): point colours of an HDR model go through the display chain at this EV (false: raw).
+        bool hdr_display = true;
+        float hdr_exposure_ev = 0.0f;
     };
 
     struct FramePanelMetadata {

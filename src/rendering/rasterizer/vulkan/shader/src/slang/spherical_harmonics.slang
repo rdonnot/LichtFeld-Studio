@@ -500,8 +500,11 @@ void compute_sh_basis_16(float3 dir, uint32_t active_sh, out float basis[16]) {
     }
 }
 
+// The raw SH sum b = sum_i Y_i(dir) c_i, before the +0.5 offset and the activation. Shared by the LDR
+// colour (max(b + 0.5, 0)) and the HDR fork's log-radiance colour (exp(min(b + 0.5, ln cmax))), so the
+// LDR path's arithmetic is exactly what it was.
 [Differentiable]
-float3 compute_color_from_sh_coeffs(SpherHarmCoeffs sh, float3 dir, uint32_t active_sh) {
+float3 compute_sh_sum(SpherHarmCoeffs sh, float3 dir, uint32_t active_sh) {
     float basis[16];
     compute_sh_basis_16(dir, active_sh, basis);
 
@@ -524,11 +527,28 @@ float3 compute_color_from_sh_coeffs(SpherHarmCoeffs sh, float3 dir, uint32_t act
     rgb += basis[13] * sh.coeff13;
     rgb += basis[14] * sh.coeff14;
     rgb += basis[15] * sh.coeff15;
+    return rgb;
+}
+
+[Differentiable]
+float3 compute_color_from_sh_coeffs(SpherHarmCoeffs sh, float3 dir, uint32_t active_sh) {
+    float3 rgb = compute_sh_sum(sh, dir, active_sh);
 
     rgb += float(0.5);
     rgb = max(rgb, float(0.0));
 
     return rgb;
+}
+
+// HDR fork (PLAN.md M2/M4): a model trained with --hdr stores LOG radiance in its SH, the fastgs
+// activation is colour = exp(min(0.5 + b, ln color_max)) in absolute scene units. The viewer works in
+// radiance NORMALISED by the scene's P99 luminance s (white = 1 at EV 0): exp(min(0.5 + b - ln s,
+// ln(color_max / s))). The subtraction happens in the log domain so the cap and the blend clamp
+// (g_blend_color_max = color_max / s) agree exactly; exp never returns a negative value.
+float3 compute_hdr_color_from_sh_coeffs(SpherHarmCoeffs sh, float3 dir, uint32_t active_sh,
+                                        float log_scale, float ln_cap_norm) {
+    float3 b = compute_sh_sum(sh, dir, active_sh) + float(0.5) - log_scale;
+    return exp(min(b, float3(ln_cap_norm)));
 }
 
 // NOTE on cooperative-matrix SH evaluation (P13, deferred):

@@ -48,7 +48,6 @@ namespace lfs::python {
         int max_sh_degree() const { return data_->get_max_sh_degree(); }
         float scene_scale() const { return data_->get_scene_scale(); }
         size_t num_points() const { return data_->size(); }
-
         // HDR state (docs/hdr.md): log-radiance SH, the scale s (natural display exposure 1/s) and the cap.
         bool is_hdr() const { return data_->is_hdr(); }
         float hdr_scale() const { return data_->hdr().scale; }

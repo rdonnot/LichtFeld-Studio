@@ -456,6 +456,9 @@ namespace lfs::vis {
             .color_exposure = ctx.settings.color_exposure,
             .color_tonemapping = ctx.settings.color_tonemapping,
             .splat_render_profile = ctx.settings.splat_render_profile,
+            .hdr_display = ctx.settings.hdr_display,
+            .hdr_exposure_ev = ctx.settings.hdr_exposure_ev,
+            .hdr_false_color = ctx.settings.hdr_false_color,
             .scaling_modifier = ctx.settings.scaling_modifier,
             .antialiasing = ctx.settings.antialiasing,
             .mip_filter = ctx.settings.mip_filter,
@@ -603,7 +606,9 @@ namespace lfs::vis {
                  .node_visibility_mask = ctx.scene_state.node_visibility_mask},
             .filters = {},
             .overlay = {},
-            .transparent_background = environmentBackgroundUsesTransparentViewerCompositing(ctx.settings)};
+            .transparent_background = environmentBackgroundUsesTransparentViewerCompositing(ctx.settings),
+            .hdr_display = ctx.settings.hdr_display,
+            .hdr_exposure_ev = ctx.settings.hdr_exposure_ev};
 
         if (!ctx.training_active) {
             if (ctx.gaussian_selection_visible)

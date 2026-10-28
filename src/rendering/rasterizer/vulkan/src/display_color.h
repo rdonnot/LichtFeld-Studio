@@ -1,4 +1,5 @@
 #pragma once
+#include <cmath>
 #include <cstdint>
 #include <glm/glm.hpp>
 
@@ -12,6 +13,8 @@ namespace lfs::rendering {
     using glm::max;
     using glm::min;
     using glm::pow;
+    using std::log;
+    using std::log2;
 #include "../shader/src/slang/display_color.inc"
 #undef LFS_COLOR_INLINE
 #undef LFS_COLOR_VEC3

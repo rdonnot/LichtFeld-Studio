@@ -237,11 +237,34 @@
           </select>
         </div>
       </div>
-      <div class="setting-row setting-row--aligned" data-tooltip="tooltip.color_exposure">
-        <span class="setting-row__label-col" data-reset-prop="color_exposure">{{label_color_exposure}}</span>
-        <div class="setting-row__control-col setting-row__control-col--slider">
-          <input type="range" class="setting-slider" data-value="color_exposure" min="0.1" max="8" step="0.01" data-attrif-disabled="color_tonemapping == 'none'" />
-          <span class="slider-value">{{color_exposure | format_float(2)}}×</span>
+      <div data-if="!hdr_model">
+        <div class="setting-row setting-row--aligned" data-tooltip="tooltip.color_exposure">
+          <span class="setting-row__label-col" data-reset-prop="color_exposure">{{label_color_exposure}}</span>
+          <div class="setting-row__control-col setting-row__control-col--slider">
+            <input type="range" class="setting-slider" data-value="color_exposure" min="0.1" max="8" step="0.01" data-attrif-disabled="color_tonemapping == 'none'" />
+            <span class="slider-value">{{color_exposure | format_float(2)}}×</span>
+          </div>
+        </div>
+      </div>
+      <div data-if="hdr_model">
+        <div class="setting-row setting-row--aligned" data-tooltip="tooltip.hdr_exposure_ev">
+          <span class="setting-row__label-col" data-reset-prop="hdr_exposure_ev">{{label_hdr_exposure_ev}}</span>
+          <div class="setting-row__control-col setting-row__control-col--slider">
+            <input type="range" class="setting-slider" data-value="hdr_exposure_ev" min="-12" max="12" step="0.05" data-attrif-disabled="!hdr_display" />
+            <span class="slider-value">{{hdr_exposure_ev | format_float(2)}} EV</span>
+          </div>
+        </div>
+        <div class="setting-row setting-row--aligned" data-tooltip="tooltip.hdr_false_color">
+          <span class="setting-row__label-col" data-reset-prop="hdr_false_color">{{label_hdr_false_color}}</span>
+          <label class="setting-row__control-col setting-row__control-col--checkbox">
+            <input type="checkbox" data-checked="hdr_false_color" data-attrif-disabled="!hdr_display" />
+          </label>
+        </div>
+        <div class="setting-row setting-row--aligned" data-tooltip="tooltip.hdr_display">
+          <span class="setting-row__label-col" data-reset-prop="hdr_display">{{label_hdr_display}}</span>
+          <label class="setting-row__control-col setting-row__control-col--checkbox">
+            <input type="checkbox" data-checked="hdr_display" />
+          </label>
         </div>
       </div>
       <div class="setting-row setting-row--aligned" data-tooltip="tooltip.appearance_correction">

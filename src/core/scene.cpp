@@ -1329,6 +1329,15 @@ namespace lfs::core {
         if (has_any_deleted) {
             result.model->deleted() = std::move(deleted);
         }
+        // HDR fork (M4): the concatenation carries the HDR state of its inputs, or the viewer would show an
+        // HDR model's log SH raw as soon as a second node is visible. Mixed LDR/HDR scenes are not
+        // supported (one activation per draw): the first HDR input wins and the LDR nodes read wrong.
+        for (const auto& model_ptr : models) {
+            if (model_ptr->is_hdr()) {
+                result.model->set_hdr(model_ptr->hdr());
+                break;
+            }
+        }
         result.inputs = std::move(inputs);
         return result;
     }

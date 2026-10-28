@@ -8703,6 +8703,21 @@ namespace lfs::vis::project {
                                             true, std::memory_order_acq_rel)) {
                                         pending_restore = true;
                                     }
+                                    // HDR fork (M4): the hydrated model is shown long before (or without) a
+                                    // trainer restore, and the SCNG chunk does not carry SplatData::HdrState.
+                                    // Tag it from the project's parameters (the CKPT's, else the pending PRMS)
+                                    // so the viewer reads its log-radiance SH correctly. M5 owns the PLY side.
+                                    if (auto* const hydrated_model = manager->getScene().getTrainingModel();
+                                        hydrated_model && !hydrated_model->is_hdr()) {
+                                        const auto& opt = report.checkpoint_params
+                                                              ? report.checkpoint_params->optimization
+                                                              : report.pending_parameters.active_optimization();
+                                        if (opt.hdr && opt.hdr_scale > 0.0f && opt.hdr_color_max > 0.0f) {
+                                            hydrated_model->set_hdr({true, opt.hdr_scale, opt.hdr_color_max});
+                                            LOG_INFO("Project model tagged HDR from its parameters (scale {}, color_max {})",
+                                                     opt.hdr_scale, opt.hdr_color_max);
+                                        }
+                                    }
                                     const auto trainer_restored_at =
                                         std::chrono::steady_clock::
                                             now();

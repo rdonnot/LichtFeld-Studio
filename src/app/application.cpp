@@ -49,6 +49,7 @@
 #include "preprocessing/preprocess.hpp"
 #include "python/runner.hpp"
 #include "rendering/coordinate_conventions.hpp"
+#include "rendering/display_color.hpp"
 #include "sequencer/timeline.hpp"
 #include "training/rasterization/fast_rasterizer.hpp"
 #include "visualizer/gui/layout_state.hpp"
@@ -1329,6 +1330,13 @@ namespace lfs::app {
             {
                 auto* const bg_ptr = background.ptr<float>();
                 bg_ptr[0] = bg_ptr[1] = bg_ptr[2] = 0.0f;
+            }
+            // HDR fork (M4): fastgs composites the background in ABSOLUTE radiance for an HDR model; a
+            // display-referred colour must be linearised and scaled by s or it lands black after / s.
+            if (rendering::hdr_display_applies(*model)) {
+                auto* const bg_ptr = background.ptr<float>();
+                for (int c = 0; c < 3; ++c)
+                    bg_ptr[c] = rendering::lfsSrgbEotfChannel(std::clamp(bg_ptr[c], 0.0f, 1.0f)) * model->hdr().scale;
             }
             background = background.to(core::Device::CUDA);
 
