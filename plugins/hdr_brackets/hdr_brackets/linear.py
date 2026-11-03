@@ -12,7 +12,10 @@ Input: a capture folder written by N'Brain's camera tether (`tether_set.json`, "
 names every frame's file, exposure time and ND, so nothing is grouped from EXIF — and the developed EXRs, one per raw
 at `<exr_dir>/<frame file with .exr>` (nd/ kept). The EXRs' colourspace is their `lichtfeld_colorspace` /
 `colorspace` string attribute, else `input_space` (default ACEScg). It is carried to the merged EXRs unchanged: the
-trainer converts a foreign linear space to its working space on load (OCIO 3×3, image_exr.cpp). Each frame's clip
+trainer converts a foreign linear space to its working space on load (OCIO 3×3, image_exr.cpp) — except ACES2065-1
+(AP0), which is merged as it is and written as ACEScg: AP0 is an interchange space whose primaries lie outside the
+visible colours, nothing to fit a splat's colours in. The weights are one scalar a pixel, so the 3×3 after the merge
+is the same as before it, and the clip test still reads the developer's own values. Each frame's clip
 level is its float attribute `white` when the developer wrote one, else measured: the image maximum, when at least
 0.05 % of the pixels (and 16 or more) sit within 2 % of it (a plateau = the sensor clipped), else no clip.
 
@@ -53,6 +56,11 @@ PLATEAU_FRACTION, PLATEAU_RTOL, PLATEAU_MIN = 5e-4, 0.02, 16
 # ACEScg (AP1, D60) → linear Rec.709 (D65), Bradford — only for the proxy's display; the merged EXR keeps AP1.
 AP1_TO_REC709 = np.array([[1.70505, -0.62179, -0.08326], [-0.13026, 1.14080, -0.01055], [-0.02400, -0.12897, 1.15297]])
 AP1_NAMES = {"acescg", "aces - acescg", "lin_ap1", "linear ap1", "acescg (ap1)"}
+# ACES2065-1 (AP0) → ACEScg (AP1): same white (D60), no adaptation; the ACES reference matrix.
+AP0_TO_AP1 = np.array([[1.4514393161, -0.2365107469, -0.2149285693], [-0.0765537734, 1.1762296998, -0.0996759264],
+                       [0.0083161484, -0.0060324498, 0.9977163014]])
+AP0_NAMES = {"aces2065-1", "aces - aces2065-1", "aces2065", "aces 2065-1", "lin_ap0", "linear ap0", "aces_interchange",
+             "aces2065-1 (ap0)", "aces ap0"}
 REC709_NAMES = {"lin_srgb", "linear rec.709 (srgb)", "lin_rec709", "linear srgb", "scene-linear rec.709-srgb"}
 
 
@@ -128,6 +136,7 @@ def write_frame(path: Path, rgb: np.ndarray, colorspace: str) -> None:
 # The standard `chromaticities` attribute, for a writer that names no colourspace (rawsmith): primaries → OCIO name.
 _PRIMARIES = {
     "ACEScg": (0.713, 0.293, 0.165, 0.830, 0.128, 0.044),
+    "ACES2065-1": (0.7347, 0.2653, 0.0, 1.0, 0.0001, -0.077),
     "lin_srgb": (0.64, 0.33, 0.30, 0.60, 0.15, 0.06),
     "Linear Rec.2020": (0.708, 0.292, 0.170, 0.797, 0.131, 0.046),
 }
@@ -212,6 +221,22 @@ def merge_frames(frames: list[tuple[np.ndarray, float, float | None]]) -> tuple[
     return np.maximum(out, 0.0).astype(np.float32), int(np.count_nonzero(~ok))
 
 
+def is_ap0(colorspace: str | None) -> bool:
+    return bool(colorspace) and colorspace.strip().lower() in AP0_NAMES
+
+
+def output_space(colorspace: str) -> str:
+    """The colourspace the merged EXRs are written in: the input's, ACEScg for an AP0 input."""
+    return "ACEScg" if is_ap0(colorspace) else colorspace
+
+
+def to_output(rgb: np.ndarray, colorspace: str) -> np.ndarray:
+    """Merged radiance in the input's space → output_space(): AP0 through its 3×3 to AP1, others unchanged."""
+    if is_ap0(colorspace):
+        return np.maximum(rgb @ AP0_TO_AP1.T.astype(np.float32), 0.0)
+    return rgb
+
+
 def to_display(rgb: np.ndarray, colorspace: str) -> np.ndarray:
     """The merged radiance in linear Rec.709 for the proxy (AP1 through its 3×3, Rec.709 as is, others as is)."""
     if colorspace.lower() in AP1_NAMES:
@@ -255,13 +280,14 @@ def run(capture: str | os.PathLike, out: str | os.PathLike, *, exr_dir: str | os
                 yield resize(rgb, max_side), f.t_eff, white
 
         hdr, saturated = merge_frames(frames())
+        hdr = to_output(hdr, space or input_space)
         name = position_name(k)
-        write_frame(out / HDR_DIR / f"{name}.exr", hdr, space or input_space)
-        y = px.luminance(to_display(hdr, space or input_space))
+        write_frame(out / HDR_DIR / f"{name}.exr", hdr, out_space := output_space(space or input_space))
+        y = px.luminance(to_display(hdr, out_space))
         entries.append({
             "name": name, "hdr": f"{HDR_DIR}/{name}.exr", "proxy": f"{PROXY_DIR}/{name}.png", "bracket_id": pos.index,
             "ghost_score": 0.0, "flagged": False, "saturated": saturated,
-            "key": px.proxy_exposure_value(to_display(hdr, space or input_space), proxy_ev),
+            "key": px.proxy_exposure_value(to_display(hdr, out_space), proxy_ev),
             "stats": {"min": float(y.min()), "p50": float(np.median(y)), "max": float(y.max())},
             "sources": [{"file": f.file, "exposure_time": f.exposure_time, "nd_stops": f.nd_stops,
                          "t_eff": f.t_eff, "white": w, "ev_step": float(np.log2(f.t_eff / _median_t(pos)))}
@@ -276,7 +302,7 @@ def run(capture: str | os.PathLike, out: str | os.PathLike, *, exr_dir: str | os
         hdr, _ = read_frame(out / e["hdr"])
         from PIL import Image
 
-        Image.fromarray(px.tonemap_proxy(to_display(hdr, space or input_space), operator=proxy_operator,
+        Image.fromarray(px.tonemap_proxy(to_display(hdr, output_space(space or input_space)), operator=proxy_operator,
                                          scale=scale)).save(out / e["proxy"])
         e["proxy_scale"] = scale
     sfm: dict[str, Any] = {"ran": False}
@@ -291,7 +317,8 @@ def run(capture: str | os.PathLike, out: str | os.PathLike, *, exr_dir: str | os
         if r.registered < len(entries):
             warnings.append(f"SfM registered {r.registered} of {len(entries)} positions")
     index = {
-        "version": INDEX_VERSION, "linear": True, "crf": None, "colorspace": space or input_space,
+        "version": INDEX_VERSION, "linear": True, "crf": None, "colorspace": output_space(space or input_space),
+        "input_colorspace": space or input_space,
         "proxy_operator": proxy_operator, "proxy_ev": proxy_ev, "source_dir": str(capture),
         "units": "scene-linear per second of exposure at the shoot's ISO and f-number (the developer's scale)",
         "capture": {k: rec.get(k) for k in ("kind", "name", "camera", "lens", "aperture", "iso", "wb", "base")},
@@ -299,7 +326,8 @@ def run(capture: str | os.PathLike, out: str | os.PathLike, *, exr_dir: str | os
     }
     (out / INDEX_FILE).write_text(json.dumps(index, indent=1))
     report = {"ok": True, "positions": len(entries), "frames": sum(len(p.frames) for p in positions),
-              "colorspace": space or input_space, "proxy_scale": scale, "sfm": sfm, "warnings": warnings,
+              "colorspace": output_space(space or input_space), "input_colorspace": space or input_space,
+              "proxy_scale": scale, "sfm": sfm, "warnings": warnings,
               "seconds": round(time.time() - t0, 1), "out": str(out)}
     (out / "linear_report.json").write_text(json.dumps(report, indent=1))
     tick("done", 1.0)
@@ -315,7 +343,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("capture", help="folder with tether_set.json")
     ap.add_argument("out")
     ap.add_argument("--exr-dir", help="the developed EXRs (default <capture>/exr)")
-    ap.add_argument("--input-space", default="ACEScg", help="colourspace of EXRs that do not declare one")
+    ap.add_argument("--input-space", default="ACEScg", help="colourspace of EXRs that do not declare one (ACEScg, ACES2065-1, lin_srgb…)")
     ap.add_argument("--max-side", type=int, default=0, help="downscale so the long side is at most this (0 = full)")
     ap.add_argument("--proxy-operator", default="aces", choices=px.OPERATORS)
     ap.add_argument("--camera-model", default="SIMPLE_RADIAL")
