@@ -118,3 +118,41 @@ def test_clip_level_is_measured_from_the_plateau():
     ramp = np.linspace(0, 0.5, 300, dtype=np.float32).reshape(10, 10, 3)
     assert linear.clip_level(ramp, {}) is None
     assert linear.clip_level(ramp, {"white": 0.9}) == pytest.approx(0.9)
+
+
+def test_half_exrs_keep_22_stops_through_one_gain(tmp_path):
+    """--exr-type half: the set × one power of two (from the shutter times alone), stored at half precision within
+    half's 11 bits; the pixel clipped in every frame keeps its lower bound white / t_min — which the gain puts at
+    2^13 at most, so nothing reaches half's 65504."""
+    import OpenEXR
+
+    cap, truth = write_capture(tmp_path)
+    out = tmp_path / "out"
+    rep = linear.run(cap, out, run_sfm=False, exr_type="half")
+    idx = json.loads((out / "exposures.json").read_text())
+    gain = idx["radiance_gain"]
+    assert idx["exr_type"] == "half" and gain == 2.0**-7      # 2^13 × (1/1000 s behind ND 10), floored to a power of 2
+    for p, e in enumerate(truth):
+        path = out / "images_hdr" / f"pos_{p:03d}.exr"
+        with OpenEXR.File(str(path)) as f:
+            px = f.channels()["RGB"].pixels
+            assert px.dtype == np.float16 and f.header()["radiance_gain"] == pytest.approx(gain)
+        got = px.astype(np.float32) / gain
+        ok = np.ones((H, W), bool); ok[0, 0] = False
+        rel = np.abs(got[ok] - e[ok]) / e[ok]
+        assert float(rel.max()) < 1e-3
+        assert 4096 < float(px[0, 0, 0]) <= 8192
+    assert not any("past half's range" in w for w in rep["warnings"])
+    assert (out / "images" / "pos_000.png").is_file()
+
+
+def test_half_proxy_matches_the_float_proxy(tmp_path):
+    """The SfM proxies do not depend on the EXR type: the gain is taken back out before the tone map."""
+    from PIL import Image
+
+    cap, _ = write_capture(tmp_path)
+    linear.run(cap, tmp_path / "f", run_sfm=False)
+    linear.run(cap, tmp_path / "h", run_sfm=False, exr_type="half")
+    a = np.asarray(Image.open(tmp_path / "f" / "images" / "pos_000.png"), dtype=np.int16)
+    b = np.asarray(Image.open(tmp_path / "h" / "images" / "pos_000.png"), dtype=np.int16)
+    assert np.abs(a - b).max() <= 1

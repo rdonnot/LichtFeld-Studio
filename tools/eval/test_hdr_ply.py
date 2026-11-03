@@ -9,6 +9,8 @@ log-radiance PLY with numpy, converts it with `LichtFeld-Studio convert` and rea
   (c) the HDR comments survive the round trip
   (d) a baked LDR PLY has no HDR header and its colours lie in [0, 1]
   (e) SPZ refuses an HDR model unless it is baked
+  (f) --ply-half: 16-bit properties (x/y/z float32), HDR radiance kept to half precision through a power-of-two gain,
+      and LichtFeld reads the half file back
 """
 
 from __future__ import annotations
@@ -291,3 +293,75 @@ def test_project_keeps_hdr_state(tmp_path: Path):
     # and the LDR formats still refuse the reopened model unless baked
     res = convert(project, tmp_path / "from_project.spz")
     assert res.returncode != 0 and "bake" in (res.stdout + res.stderr).lower()
+
+
+# ── (f) 16-bit PLY (--ply-half, docs/hdr.md "16-bit PLY") ───────────────────────────────────────────────
+
+def _types(lines: list[str]) -> dict[str, str]:
+    return {ln.split()[2]: ln.split()[1] for ln in lines if ln.startswith("property ")}
+
+
+@pytest.mark.parametrize("degree", [0, 3])
+def test_half_ply_keeps_hdr_radiance(tmp_path: Path, degree: int):
+    """The same model exported float32 and half: normalised radiance (÷ hdr_scale) agrees to half's precision over
+    four decades of radiance; positions are bit-exact; the file is about half the size."""
+    src = tmp_path / "log.ply"
+    make_log_ply(src, 4096, degree, 0.1)
+    full, half = tmp_path / "full.ply", tmp_path / "half.ply"
+    expect_ok(convert(src, full))
+    expect_ok(convert(src, half, "--ply-half"))
+    lf, hf, df = hdr_ply.read_ply(full)
+    lh, hh, dh = hdr_ply.read_ply(half)
+    types = _types(lh)
+    assert {types[c] for c in "xyz"} == {"float"}
+    assert {t for n, t in types.items() if n not in "xyz"} == {"half"}, types
+    gain = hh["half_gain"]
+    assert gain > 0 and float(np.log2(gain)).is_integer(), gain
+    assert hh["mode"] == "linear" and hh["scale"] == pytest.approx(hf["scale"] * gain, rel=1e-6)
+    assert hh["color_max"] == pytest.approx(hf["color_max"] * gain, rel=1e-6)
+    for c in "xyz":
+        assert np.array_equal(df[c], dh[c])
+    dirs = hdr_ply.random_directions(256, 3)
+    ra = hdr_ply.radiance(df, hf, dirs) / hf["scale"]
+    rb = hdr_ply.radiance(dh.astype([(n, "<f8") for n in dh.dtype.names]), hh, dirs) / hh["scale"]
+    q = hdr_ply.rel_error_quantiles(ra, rb, 1e-6)
+    print(f"half vs float32, degree {degree}: gain {gain}, normalised radiance relative error {q}")
+    assert q["median"] < 5e-4 and q["p99"] < 3e-3, q
+    ratio = half.stat().st_size / full.stat().st_size
+    assert ratio < 0.6, ratio
+
+
+def test_half_ply_reads_back(tmp_path: Path):
+    """LichtFeld loads the half file (widened to float32): converting it to a float32 PLY gives the half values."""
+    src = tmp_path / "log.ply"
+    make_log_ply(src, 2048, 0, 0.0)
+    half, back = tmp_path / "half.ply", tmp_path / "back.ply"
+    expect_ok(convert(src, half, "--ply-half"))
+    expect_ok(convert(half, back))
+    _, hh, dh = hdr_ply.read_ply(half)
+    _, hb, db = hdr_ply.read_ply(back)
+    assert hb["scale"] == pytest.approx(hh["scale"], rel=1e-6)
+    ra = 0.5 + hdr_ply.C0 * np.stack([dh[f"f_dc_{i}"].astype(np.float64) for i in range(3)], -1)
+    rb = 0.5 + hdr_ply.C0 * np.stack([db[f"f_dc_{i}"].astype(np.float64) for i in range(3)], -1)
+    assert (np.abs(rb - ra) / ra).max() < 1e-5
+    for k in ("opacity", "scale_0", "rot_0", "x"):
+        assert np.allclose(db[k], dh[k].astype(np.float32), rtol=1e-6, atol=1e-6), k
+
+
+def test_half_ply_ldr(tmp_path: Path):
+    """An LDR model: the values cast to half, no gain, no HDR comment."""
+    rng = np.random.default_rng(5)
+    fields = [(c, "<f4") for c in ("x", "y", "z")] + [(f"f_dc_{i}", "<f4") for i in range(3)]
+    fields += [("opacity", "<f4")] + [(f"scale_{i}", "<f4") for i in range(3)] + [(f"rot_{i}", "<f4") for i in range(4)]
+    data = np.zeros(1000, dtype=np.dtype(fields))
+    for name in data.dtype.names:
+        data[name] = rng.uniform(-1.5, 1.5, 1000)
+    data["rot_0"] = 1.0
+    src, half = tmp_path / "ldr.ply", tmp_path / "half.ply"
+    hdr_ply.write_ply(src, data)
+    expect_ok(convert(src, half, "--ply-half"))
+    lines, hh, dh = hdr_ply.read_ply(half)
+    assert hh["mode"] is None and "half_gain" not in hh
+    assert _types(lines)["f_dc_0"] == "half"
+    _, _, ds = hdr_ply.read_ply(tmp_path / "ldr.ply")
+    assert np.allclose(dh["f_dc_0"].astype(np.float32), ds["f_dc_0"], atol=1e-3)

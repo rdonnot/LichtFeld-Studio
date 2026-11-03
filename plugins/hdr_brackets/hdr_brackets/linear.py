@@ -20,12 +20,21 @@ level is its float attribute `white` when the developer wrote one, else measured
 0.05 % of the pixels (and 16 or more) sit within 2 % of it (a plateau = the sensor clipped), else no clip.
 
 Output (`<out>/`, the layout M2 trains from with `--images images_hdr --hdr`):
-    images_hdr/pos_NNN.exr   merged radiance, float32 RGB, the input's colourspace tag
+    images_hdr/pos_NNN.exr   merged radiance, RGB float32 or half (`exr_type`), the input's colourspace tag
     images/pos_NNN.png       8-bit proxy for SfM (Rec.709 for display: an AP1 input goes through its 3×3 first)
     exposures.json           version 2 + "linear": true, "crf": null, "colorspace"
     sparse/0/                COLMAP model when SfM runs
 
+Half (16-bit) EXRs (`--exr-type half`) carry 2^-14 … 65504 at 11 bits: radiance per second of exposure does not
+fit that (an ND frame at 1/8000 s gives millions), so the whole SET is multiplied by one power of two, `gain`, chosen
+from the shutter times alone — the brightest radiance any frame can record (white / the shortest t_eff, white ≤ 1
+for a developed raw) lands at 2^13, which leaves 4× headroom and keeps 1 DN of the longest frame of a 14-stop
+bracket in half's normal range. The gain is in exposures.json (`radiance_gain`) and each EXR (`radiance_gain`); it
+changes nothing for training (the trainer normalises by the set's own white); a value past 65504 is clipped there
+and counted.
+
     uv run python -m hdr_brackets.linear <capture_dir> <out> [--exr-dir D] [--max-side 3200] [--no-sfm]
+                                         [--exr-type half|float]
 """
 
 from __future__ import annotations
@@ -124,13 +133,35 @@ def read_frame(path: Path) -> tuple[np.ndarray, dict[str, Any]]:
     return np.ascontiguousarray(rgb, dtype=np.float32), header
 
 
-def write_frame(path: Path, rgb: np.ndarray, colorspace: str) -> None:
+EXR_TYPES = ("float", "half")
+HALF_MAX = 65504.0
+HALF_TARGET = 2.0**13        # where the set's brightest possible radiance lands in a half EXR (4× under HALF_MAX)
+
+
+def write_frame(path: Path, rgb: np.ndarray, colorspace: str, exr_type: str = "float",
+                gain: float = 1.0) -> int:
+    """One merged EXR; returns how many values were clipped to half's range (always 0 for float)."""
     import OpenEXR
 
     path.parent.mkdir(parents=True, exist_ok=True)
     header = {"compression": OpenEXR.ZIP_COMPRESSION, "type": OpenEXR.scanlineimage,
               "lichtfeld_colorspace": colorspace}
-    OpenEXR.File(header, {"RGB": np.ascontiguousarray(rgb, dtype=np.float32)}).write(str(path))
+    clipped = 0
+    if exr_type == "half":
+        rgb = rgb * np.float32(gain)
+        clipped = int(np.count_nonzero(rgb > HALF_MAX))
+        pixels = np.minimum(rgb, HALF_MAX).astype(np.float16)
+        header["radiance_gain"] = float(gain)
+    else:
+        pixels = rgb.astype(np.float32)
+    OpenEXR.File(header, {"RGB": np.ascontiguousarray(pixels)}).write(str(path))
+    return clipped
+
+
+def half_gain(positions: list[Position]) -> float:
+    """The set's power of two for half EXRs: the brightest radiance any frame can record (white 1 / its t_eff) → 2^13."""
+    t_min = min(f.t_eff for pos in positions for f in pos.frames)
+    return float(2.0 ** np.floor(np.log2(HALF_TARGET * t_min)))
 
 
 # The standard `chromaticities` attribute, for a writer that names no colourspace (rawsmith): primaries → OCIO name.
@@ -249,7 +280,7 @@ def to_display(rgb: np.ndarray, colorspace: str) -> np.ndarray:
 
 def run(capture: str | os.PathLike, out: str | os.PathLike, *, exr_dir: str | os.PathLike | None = None,
         input_space: str = "ACEScg", max_side: int = 0, proxy_operator: str = "aces", proxy_ev: float = 0.0,
-        run_sfm: bool = True, camera_model: str = "SIMPLE_RADIAL",
+        run_sfm: bool = True, camera_model: str = "SIMPLE_RADIAL", exr_type: str = "float",
         progress: Callable[[str, float], None] | None = None) -> dict[str, Any]:
     """The whole dataset; returns the report (also written to `<out>/linear_report.json`)."""
     t0 = time.time()
@@ -258,6 +289,9 @@ def run(capture: str | os.PathLike, out: str | os.PathLike, *, exr_dir: str | os
     rec, positions, warnings = read_capture(capture, Path(exr_dir) if exr_dir else None)
     if not positions:
         raise FileNotFoundError(f"{capture}: no position has a developed EXR ({'; '.join(warnings[:3])})")
+    if exr_type not in EXR_TYPES:
+        raise ValueError(f"exr_type {exr_type!r}: one of {EXR_TYPES}")
+    gain = half_gain(positions) if exr_type == "half" else 1.0
     (out / HDR_DIR).mkdir(parents=True, exist_ok=True)
     (out / PROXY_DIR).mkdir(parents=True, exist_ok=True)
     space: str | None = None
@@ -282,7 +316,10 @@ def run(capture: str | os.PathLike, out: str | os.PathLike, *, exr_dir: str | os
         hdr, saturated = merge_frames(frames())
         hdr = to_output(hdr, space or input_space)
         name = position_name(k)
-        write_frame(out / HDR_DIR / f"{name}.exr", hdr, out_space := output_space(space or input_space))
+        clipped = write_frame(out / HDR_DIR / f"{name}.exr", hdr, out_space := output_space(space or input_space),
+                              exr_type, gain)
+        if clipped:
+            warnings.append(f"{name}: {clipped} values past half's range (65504) clipped — use --exr-type float")
         y = px.luminance(to_display(hdr, out_space))
         entries.append({
             "name": name, "hdr": f"{HDR_DIR}/{name}.exr", "proxy": f"{PROXY_DIR}/{name}.png", "bracket_id": pos.index,
@@ -300,6 +337,7 @@ def run(capture: str | os.PathLike, out: str | os.PathLike, *, exr_dir: str | os
     for k, e in enumerate(entries):
         tick("proxy", k / len(entries))
         hdr, _ = read_frame(out / e["hdr"])
+        hdr /= np.float32(gain)
         from PIL import Image
 
         Image.fromarray(px.tonemap_proxy(to_display(hdr, output_space(space or input_space)), operator=proxy_operator,
@@ -320,7 +358,9 @@ def run(capture: str | os.PathLike, out: str | os.PathLike, *, exr_dir: str | os
         "version": INDEX_VERSION, "linear": True, "crf": None, "colorspace": output_space(space or input_space),
         "input_colorspace": space or input_space,
         "proxy_operator": proxy_operator, "proxy_ev": proxy_ev, "source_dir": str(capture),
-        "units": "scene-linear per second of exposure at the shoot's ISO and f-number (the developer's scale)",
+        "units": "scene-linear per second of exposure at the shoot's ISO and f-number (the developer's scale)"
+                 + (", × radiance_gain" if exr_type == "half" else ""),
+        "exr_type": exr_type, "radiance_gain": gain,
         "capture": {k: rec.get(k) for k in ("kind", "name", "camera", "lens", "aperture", "iso", "wb", "base")},
         "positions": entries,
     }
@@ -348,6 +388,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--proxy-operator", default="aces", choices=px.OPERATORS)
     ap.add_argument("--camera-model", default="SIMPLE_RADIAL")
     ap.add_argument("--no-sfm", action="store_true")
+    ap.add_argument("--exr-type", default="float", choices=EXR_TYPES,
+                    help="merged EXRs as 32-bit float or 16-bit half (half: × one power-of-two gain, see above)")
     a = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
@@ -357,7 +399,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         report = run(a.capture, a.out, exr_dir=a.exr_dir, input_space=a.input_space, max_side=a.max_side,
                      proxy_operator=a.proxy_operator, run_sfm=not a.no_sfm, camera_model=a.camera_model,
-                     progress=progress)
+                     exr_type=a.exr_type, progress=progress)
     except (FileNotFoundError, ValueError) as e:
         print(json.dumps({"ok": False, "error": str(e)}), flush=True)
         return 2

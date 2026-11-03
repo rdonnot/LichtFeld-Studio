@@ -170,6 +170,7 @@ normalised radiance at EV 0 and drift with the exposure.
 | format | HDR kept? | what happens with an HDR model |
 |---|---|---|
 | PLY `--hdr-export linear` (default for an HDR model) | **yes** | linear radiance in the standard SH convention + the `lichtfeld_hdr` header below; any splat tool reads it, with values above 1. Degree ≥ 1 is a least-squares projection (≈ 0.001 dB on the room). |
+| PLY `--hdr-export linear --ply-half` | **yes**, at half precision | the same file with 16-bit floats for every property but x/y/z (130 instead of 248 bytes a splat at degree 3), radiance × a power-of-two gain in the header — see [16-bit PLY](#16-bit-ply). LichtFeld and N'Brain read it; tools that only know PLY 1.0 types do not. |
 | PLY `--hdr-export log` | yes (lossless) | LichtFeld's internal log SH, verbatim; meaningless to other readers. |
 | `.licht` project | yes (lossless) | the raw log tensors and the HDR state. |
 | PLY `--hdr-export baked --hdr-export-ev <EV> --hdr-tonemap <op>` | **bakes** | display-referred colours in [0, 1], no HDR header: opens in any viewer at that exposure. |
@@ -268,6 +269,27 @@ down to ln 1e-6 = −13.8 and ruin the bright side (measured on a degree-1 fixtu
 positive side's median error fell from 97 % to 20 %; a log basis still cannot hold a clipped hemisphere).
 Files LichtFeld writes are positive everywhere but for a vanishing fraction of samples, so the floor never
 acts on them.
+
+## 16-bit PLY
+
+`--ply-half` (training `--export ply` and `convert`, any `--hdr-export` mode, LDR models too) writes `property half`
+for f_dc, f_rest, opacity, scale, rot (and normals); x/y/z stay float32 — half's 11 bits would be 6 cm at 100 m.
+`half` is not a PLY 1.0 type: LichtFeld's loader (widened to float32 once after the header), `tools/eval/hdr_ply.py`
+and N'Brain read it; SuperSplat, Postshot, Octane and the like do not — export float32 for them.
+
+The 0.5 offset of the SH convention is the catch: near colour 0, f_dc sits at −1.77, where half's step is 2^-10, so
+the absolute colour step is ≈ 2.7e-4 — fine at white = 600, 27 % at white = 1 for a shadow ten stops down. So a
+`linear` HDR file is first multiplied by the largest power of two `G` that keeps every coefficient under 60 000
+(radiance × G: f_dc through the offset, f_rest directly), and the header follows: `hdr_scale` and `hdr_color_max`
+× G, `hdr_display_exposure` ÷ G, `comment hdr_half_gain G`. A reader that divides by `hdr_scale` — every one
+should — sees the same normalised radiance. Values past 65 504 would be clipped and counted in the log line
+(`PLY: 16-bit (half) properties, 248 → 130 bytes per splat, HDR gain G`); the gain makes that impossible for
+colour.
+
+Measured (2026-11-03): random models over four decades of radiance, half vs float32, normalised radiance relative
+error median 0.016 %, max 0.08 % (`test_hdr_ply.py`); the 40-view room trained from half EXRs (`hdr_brackets.linear
+--exr-type half`), the same model exported both ways: median 0.015 %, p99 0.12 %, 61.6 → 32.3 MB; log scales within
+0.008, opacity logits within 0.002.
 
 ## Baked LDR — opens in any viewer
 

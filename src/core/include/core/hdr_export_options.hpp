@@ -50,6 +50,9 @@ namespace lfs::core::hdr {
         float exposure_ev = 0.0f;            // BakedLdr: EV relative to the scene's natural exposure 1/s
         ToneOperator tone = ToneOperator::Aces; // BakedLdr: tone operator
         ocio::Selection ocio{};                  // tone == Ocio: config / display / view / look (empty = current())
+        // PLY only (`--ply-half`, docs/hdr.md "16-bit PLY"): every Gaussian property but x/y/z as `half`. Rides on
+        // these options because they already reach every exporter (training --export, convert, the GUI, Python).
+        bool ply_half = false;
     };
 
     LFS_CORE_API std::optional<ToneOperator> parse_tone_operator(std::string_view name);

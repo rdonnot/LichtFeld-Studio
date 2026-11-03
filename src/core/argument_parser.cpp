@@ -536,6 +536,7 @@ namespace {
         ::args::ValueFlag<std::string> mode, tonemap;
         ::args::ValueFlag<float> exposure;
         ::args::ValueFlag<std::string> ocio_config, ocio_display, ocio_view, ocio_look;
+        ::args::Flag ply_half;
 
         explicit HdrExportFlags(::args::Group& group)
             : mode(group, "mode", "HDR models only: how the exported files hold colour. linear = linear-radiance SH with the lichtfeld_hdr header (PLY default, read by any splat tool); baked = display-referred LDR at --hdr-export-ev through --hdr-tonemap, opens in any viewer (required for sog, ssog, spz, glb, html, usd, rad); log = the internal log SH (PLY only, LichtFeld reads it back losslessly)", {"hdr-export"}),
@@ -544,7 +545,8 @@ namespace {
               ocio_config(group, "path", "OpenColorIO config file (default: $OCIO, else the built-in ACES studio config). Also decides how a foreign lichtfeld_colorspace is read", {"ocio"}),
               ocio_display(group, "display", "OCIO display for tone 'ocio' (default: the config's default display)", {"ocio-display"}),
               ocio_view(group, "view", "OCIO view for tone 'ocio' (default: the display's default view)", {"ocio-view"}),
-              ocio_look(group, "look", "OCIO look applied before the view for tone 'ocio' (default: none)", {"ocio-look"}) {}
+              ocio_look(group, "look", "OCIO look applied before the view for tone 'ocio' (default: none)", {"ocio-look"}),
+              ply_half(group, "ply-half", "PLY export: 16-bit floats (half) for every Gaussian property but the position — about half the file; an HDR model keeps its radiance (a power-of-two gain in the header puts it in half's best range). Read by LichtFeld and N'Brain; most other splat tools read float or uchar only", {"ply-half"}) {}
 
         // The --ocio* flags become the process default (core::ocio::current()) as well: a bake, the EXR reader
         // and the viewer in this process agree on the config. Returns the message on an invalid name.
@@ -587,6 +589,7 @@ namespace {
             }
             if (const auto error = read_ocio(options.ocio, options.tone == lfs::core::hdr::ToneOperator::Ocio))
                 return error;
+            options.ply_half = static_cast<bool>(ply_half);
             return std::nullopt;
         }
     };

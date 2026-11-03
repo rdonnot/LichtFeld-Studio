@@ -24,6 +24,7 @@
 #include "io/ply_export_internal.hpp"
 #include "ply_property_order.hpp"
 #include "tinyply.hpp"
+#include "usd_flat/half.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -378,7 +379,8 @@ namespace lfs::io {
                 return true;
             }
             if (type == "short" || type == "ushort" ||
-                type == "int16" || type == "uint16") {
+                type == "int16" || type == "uint16" ||
+                type == "half" || type == "float16") {
                 size = 2;
                 return true;
             }
@@ -397,6 +399,11 @@ namespace lfs::io {
 
         [[nodiscard]] bool is_float32_ply_type(const std::string_view type) {
             return type == "float" || type == "float32";
+        }
+
+        // `half` is no PLY 1.0 type: LichtFeld's 16-bit export (--ply-half, docs/hdr.md "16-bit PLY") writes it.
+        [[nodiscard]] bool is_half_ply_type(const std::string_view type) {
+            return type == "half" || type == "float16";
         }
 
     } // namespace
@@ -457,6 +464,15 @@ namespace lfs::io {
         // `comment lichtfeld_colorspace <name>` (docs/hdr.md "Colour management"): the colorspace of the radiance;
         // empty = the working space lin_srgb. Kept verbatim (OCIO names carry case and spaces).
         std::string colorspace;
+
+        // Every vertex property in file order (offset, size, half?): a half-float file is widened to float32 once
+        // after the header (widen_half_properties), so every decode path reads float32 as before.
+        struct Span {
+            size_t offset = 0, size = 0;
+            bool half = false;
+        };
+        std::vector<Span> spans;
+        bool has_half = false;
 
         FastPropertyLayout() {
             std::fill(std::begin(dc_offsets), std::end(dc_offsets), SIZE_MAX);
@@ -860,16 +876,19 @@ namespace lfs::io {
                     prop_name.starts_with(ply_constants::REST_PREFIX) ||
                     prop_name.starts_with(ply_constants::SCALE_PREFIX) ||
                     prop_name.starts_with(ply_constants::ROT_PREFIX);
-                if (gaussian_float_property && !is_float32_ply_type(type)) {
+                const bool half_property = is_half_ply_type(type);
+                if (gaussian_float_property && !is_float32_ply_type(type) && !half_property) {
                     throw_ply_error(
                         lfs::ErrorCode::InvalidArgument,
-                        std::format("PLY Gaussian property '{}' must be float32", prop_name),
+                        std::format("PLY Gaussian property '{}' must be float32 or half", prop_name),
                         lfs::SmallFields{}
                             .add("property_name", std::string(prop_name))
                             .add("property_type", std::string(type)));
                 }
 
-                if (is_float32_ply_type(type)) {
+                layout.spans.push_back({layout.vertex_stride, property_size, half_property});
+                layout.has_half = layout.has_half || half_property;
+                if (is_float32_ply_type(type) || half_property) {
                     // Property recognition using first character + length
                     if (prop_name.size() == 1) {
                         switch (prop_name.front()) {
@@ -964,6 +983,64 @@ namespace lfs::io {
         }
         throw_ply_error(lfs::ErrorCode::InvalidArgument,
                         "No end_header found in PLY file");
+    }
+
+    // A half-float PLY (--ply-half) → the same rows with every half property as float32, offsets and stride moved
+    // with them. One pass, then every decode path below (SIMD, swizzled SH, the device upload) reads float32.
+    std::vector<char> widen_half_properties(const char* vertex_data, FastPropertyLayout& layout) {
+        std::vector<size_t> old_offsets, new_offsets;
+        old_offsets.reserve(layout.spans.size());
+        new_offsets.reserve(layout.spans.size());
+        size_t stride = 0;
+        for (const auto& span : layout.spans) {
+            old_offsets.push_back(span.offset);
+            new_offsets.push_back(stride);
+            stride += span.half ? sizeof(float) : span.size;
+        }
+        const auto moved = [&](size_t& offset) {
+            if (offset == SIZE_MAX)
+                return;
+            const auto it = std::lower_bound(old_offsets.begin(), old_offsets.end(), offset);
+            offset = new_offsets[static_cast<size_t>(it - old_offsets.begin())];
+        };
+        moved(layout.pos_x_offset);
+        moved(layout.pos_y_offset);
+        moved(layout.pos_z_offset);
+        moved(layout.opacity_offset);
+        for (auto& o : layout.scale_offsets)
+            moved(o);
+        for (auto& o : layout.rot_offsets)
+            moved(o);
+        for (auto& o : layout.dc_offsets)
+            moved(o);
+        for (auto& o : layout.rest_offsets)
+            moved(o);
+
+        const size_t n = layout.vertex_count, old_stride = layout.vertex_stride;
+        std::vector<char> wide(n * stride);
+        tbb::parallel_for(tbb::blocked_range<size_t>(0, n, 4096), [&](const tbb::blocked_range<size_t>& rows) {
+            for (size_t r = rows.begin(); r < rows.end(); ++r) {
+                const char* src = vertex_data + r * old_stride;
+                char* dst = wide.data() + r * stride;
+                for (size_t k = 0; k < layout.spans.size(); ++k) {
+                    const auto& span = layout.spans[k];
+                    if (span.half) {
+                        std::uint16_t bits;
+                        std::memcpy(&bits, src + span.offset, sizeof(bits));
+                        const float value = usd_flat::half_to_float(bits);
+                        std::memcpy(dst + new_offsets[k], &value, sizeof(value));
+                    } else {
+                        std::memcpy(dst + new_offsets[k], src + span.offset, span.size);
+                    }
+                }
+            }
+        });
+        for (size_t k = 0; k < layout.spans.size(); ++k) {
+            layout.spans[k] = {new_offsets[k], layout.spans[k].half ? sizeof(float) : layout.spans[k].size, false};
+        }
+        layout.vertex_stride = stride;
+        layout.has_half = false;
+        return wide;
     }
 
     [[nodiscard]] float read_unaligned_float32(const char* ptr) {
@@ -2024,6 +2101,13 @@ namespace lfs::io {
                         .add("available_bytes", static_cast<std::int64_t>(body_bytes_available))
                         .add("complete_vertices", static_cast<std::int64_t>(complete_vertices))
                         .add("missing_bytes", static_cast<std::int64_t>(missing)));
+            }
+
+            std::vector<char> widened;
+            if (layout.has_half) {
+                widened = widen_half_properties(vertex_data, layout);
+                vertex_data = widened.data();
+                LOG_INFO("PLY: 16-bit (half) properties widened to float32 ({} vertices)", layout.vertex_count);
             }
 
             validate_ply_layout_for_import(layout);
@@ -4167,6 +4251,199 @@ namespace lfs::io {
         return attrs;
     }
 
+    // ── 16-bit PLY (--ply-half, docs/hdr.md "16-bit PLY") ─────────────────────────────────────────────────────
+    //
+    // The float32 file the writer made, re-encoded: x/y/z stay float32 (half has 11 bits — 6 cm at 100 m), every
+    // other Gaussian property becomes `half`, anything else is copied as is. An HDR `linear` file is first scaled by
+    // a power-of-two gain G (radiance × G, f_dc through the 0.5 offset, f_rest directly; hdr_scale and
+    // hdr_color_max × G, hdr_display_exposure ÷ G, `comment hdr_half_gain G`): half's absolute step near the
+    // offset is 2.7e-4, so radiance is pushed up until the largest coefficient sits just under half's range and the
+    // shadows keep their precision. A reader that divides by hdr_scale sees the same normalised radiance.
+    namespace {
+        constexpr float kHalfLimit = 60000.0f; // |value| a half property is allowed to reach (65504 is half's max)
+        constexpr float kShC0 = 0.28209479177387814f;
+
+        [[nodiscard]] bool half_ply_property(const std::string_view name) {
+            return name == "opacity" || name == "nx" || name == "ny" || name == "nz" ||
+                   name.starts_with("f_dc_") || name.starts_with("f_rest_") ||
+                   name.starts_with("scale_") || name.starts_with("rot_");
+        }
+
+        struct HalfColumn {
+            size_t src = 0, dst = 0, size = 0;
+            bool half = false;
+            int colour = 0; // 1 = f_dc (through the offset), 2 = f_rest (scaled), 0 = untouched
+        };
+
+        Result<void> write_half_ply(const std::filesystem::path& float_ply, const std::filesystem::path& output_path) {
+            MMappedFile mapped;
+            if (!mapped.map(float_ply))
+                return make_error(ErrorCode::READ_FAILURE, "Cannot map the float32 PLY for the half re-encode", float_ply);
+            const char* data = static_cast<const char*>(mapped.data);
+            const std::string_view whole(data, mapped.size);
+            const size_t end = whole.find("end_header\n");
+            if (end == std::string_view::npos)
+                return make_error(ErrorCode::INVALID_HEADER, "No end_header in the float32 PLY", float_ply);
+            const size_t body = end + std::string_view("end_header\n").size();
+
+            std::vector<std::string_view> lines;
+            for (size_t at = 0; at < end;) {
+                const size_t nl = whole.find('\n', at);
+                lines.push_back(whole.substr(at, nl - at));
+                at = nl + 1;
+            }
+            size_t count = 0, src_stride = 0, dst_stride = 0;
+            std::vector<HalfColumn> columns;
+            std::vector<std::string> names;
+            bool linear_hdr = false;
+            for (const auto line : lines) {
+                if (line.starts_with("element ")) {
+                    if (!line.starts_with("element vertex "))
+                        return make_error(ErrorCode::INVALID_HEADER, "Half re-encode: only a vertex element is expected", float_ply);
+                    count = std::stoull(std::string(line.substr(15)));
+                } else if (line.starts_with("property ")) {
+                    const auto rest = line.substr(9);
+                    const size_t sp = rest.find(' ');
+                    const auto type = rest.substr(0, sp);
+                    const auto name = rest.substr(sp + 1);
+                    size_t size = 0;
+                    if (!ply_scalar_property_size(type, size))
+                        return make_error(ErrorCode::INVALID_HEADER, std::format("Half re-encode: type '{}'", type), float_ply);
+                    HalfColumn c{src_stride, dst_stride, size, is_float32_ply_type(type) && half_ply_property(name), 0};
+                    if (c.half)
+                        c.colour = name.starts_with("f_dc_") ? 1 : name.starts_with("f_rest_") ? 2 : 0;
+                    src_stride += size;
+                    dst_stride += c.half ? 2 : size;
+                    columns.push_back(c);
+                    names.emplace_back(name);
+                } else if (line == "comment lichtfeld_hdr linear") {
+                    linear_hdr = true;
+                }
+            }
+            if (body + count * src_stride > mapped.size)
+                return make_error(ErrorCode::READ_FAILURE, "Half re-encode: the float32 PLY is truncated", float_ply);
+            const char* rows = data + body;
+            const auto value_at = [&](const size_t r, const HalfColumn& c) {
+                float v;
+                std::memcpy(&v, rows + r * src_stride + c.src, sizeof(v));
+                return v;
+            };
+
+            // The gain: the largest power of two that keeps every colour coefficient within kHalfLimit.
+            double gain = 1.0;
+            if (linear_hdr) {
+                double max_c = 0.0, max_rest = 0.0;
+                for (size_t r = 0; r < count; ++r) {
+                    for (const auto& c : columns) {
+                        if (c.colour == 1)
+                            max_c = std::max(max_c, std::abs(0.5 + kShC0 * static_cast<double>(value_at(r, c))));
+                        else if (c.colour == 2)
+                            max_rest = std::max(max_rest, std::abs(static_cast<double>(value_at(r, c))));
+                    }
+                }
+                double limit = 1048576.0;
+                if (max_c > 0.0)
+                    limit = std::min(limit, (kHalfLimit * kShC0 - 0.5) / max_c);
+                if (max_rest > 0.0)
+                    limit = std::min(limit, kHalfLimit / max_rest);
+                gain = std::exp2(std::floor(std::log2(std::max(limit, 1.0 / 1048576.0))));
+            }
+
+            std::string header;
+            for (const auto line : lines) {
+                const auto scaled = [&](const std::string_view key, const double factor) -> std::optional<std::string> {
+                    if (!line.starts_with(key))
+                        return std::nullopt;
+                    double v = 0.0;
+                    const auto text = line.substr(key.size());
+                    if (std::from_chars(text.data(), text.data() + text.size(), v).ec != std::errc{})
+                        return std::nullopt;
+                    return std::format("{}{}", key, v * factor);
+                };
+                std::optional<std::string> replaced;
+                if (linear_hdr && !(replaced = scaled("comment hdr_scale ", gain)) &&
+                    !(replaced = scaled("comment hdr_color_max ", gain)))
+                    replaced = scaled("comment hdr_display_exposure ", 1.0 / gain);
+                header += replaced ? *replaced : std::string(line);
+                header += '\n';
+                if (line == "comment lichtfeld_hdr linear")
+                    header += std::format("comment hdr_half_gain {}\n", gain);
+            }
+            // property lines: rewrite the types of the half columns (same order as `columns`)
+            {
+                std::string out;
+                size_t k = 0, at = 0;
+                while (at < header.size()) {
+                    const size_t nl = header.find('\n', at);
+                    std::string_view line(header.data() + at, nl - at);
+                    if (line.starts_with("property ")) {
+                        if (columns[k].half)
+                            out += std::format("property half {}", names[k]);
+                        else
+                            out += line;
+                        ++k;
+                    } else {
+                        out += line;
+                    }
+                    out += '\n';
+                    at = nl + 1;
+                }
+                header = std::move(out);
+            }
+            header += "end_header\n";
+
+            std::atomic<size_t> clipped{0};
+            const auto temp_path = make_temp_output_path(output_path);
+            ScopedTempOutputFile temp_file{temp_path};
+            FILE* file = lfs::core::open_file(temp_path, "wb");
+            if (!file)
+                return make_error(ErrorCode::WRITE_FAILURE, "Cannot open temporary file", temp_path);
+            bool ok = std::fwrite(header.data(), 1, header.size(), file) == header.size();
+            constexpr size_t kChunkRows = 1 << 16;
+            std::vector<char> buffer(std::min(count, kChunkRows) * dst_stride);
+            const float g = static_cast<float>(gain);
+            for (size_t first = 0; ok && first < count; first += kChunkRows) {
+                const size_t n = std::min(kChunkRows, count - first);
+                tbb::parallel_for(tbb::blocked_range<size_t>(0, n, 1024), [&](const tbb::blocked_range<size_t>& range) {
+                    size_t local_clipped = 0;
+                    for (size_t i = range.begin(); i < range.end(); ++i) {
+                        const char* src = rows + (first + i) * src_stride;
+                        char* dst = buffer.data() + i * dst_stride;
+                        for (const auto& c : columns) {
+                            if (!c.half) {
+                                std::memcpy(dst + c.dst, src + c.src, c.size);
+                                continue;
+                            }
+                            float v;
+                            std::memcpy(&v, src + c.src, sizeof(v));
+                            if (c.colour == 1)
+                                v = (g * (0.5f + kShC0 * v) - 0.5f) / kShC0;
+                            else if (c.colour == 2)
+                                v *= g;
+                            if (std::abs(v) > 65504.0f) {
+                                v = std::copysign(65504.0f, v);
+                                ++local_clipped;
+                            }
+                            const std::uint16_t bits = usd_flat::float_to_half(v);
+                            std::memcpy(dst + c.dst, &bits, sizeof(bits));
+                        }
+                    }
+                    clipped += local_clipped;
+                });
+                ok = std::fwrite(buffer.data(), 1, n * dst_stride, file) == n * dst_stride;
+            }
+            if (std::fclose(file) != 0 || !ok)
+                return make_error(ErrorCode::WRITE_FAILURE, "Half PLY write failed", temp_path);
+            if (auto r = replace_output_file(temp_path, output_path); !r)
+                return r;
+            temp_file.dismiss();
+            LOG_INFO("PLY: 16-bit (half) properties, {} → {} bytes per splat{}{}", src_stride, dst_stride,
+                     linear_hdr ? std::format(", HDR gain {}", gain) : std::string(),
+                     clipped ? std::format(", {} values clipped to half's range", clipped.load()) : std::string());
+            return {};
+        }
+    } // namespace
+
     Result<void> save_ply(const SplatData& splat_data, const PlySaveOptions& options_in) {
         PlySaveOptions options = options_in;
         if (!options.provenance) {
@@ -4248,6 +4525,16 @@ namespace lfs::io {
         auto filtered_options = options;
         filtered_options.extra_attributes = std::move(*filtered_extra_attributes);
         filtered_options.progress_callback = scale_export_progress(options.progress_callback, 0.80f, 1.0f);
+        if (options.hdr.ply_half) {
+            // the float32 file through the usual writer, then re-encoded (write_half_ply)
+            const auto float_path = make_temp_output_path(options.output_path);
+            ScopedTempOutputFile float_file{float_path};
+            filtered_options.output_path = float_path;
+            filtered_options.async = false;
+            if (auto result = save_ply(*pc, filtered_options); !result)
+                return result;
+            return write_half_ply(float_path, options.output_path);
+        }
         return save_ply(*pc, filtered_options);
     }
 

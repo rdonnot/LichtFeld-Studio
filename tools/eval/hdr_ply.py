@@ -36,6 +36,7 @@ import numpy as np
 C0 = 0.28209479177387814
 PLY_TYPES = {
     "float": "<f4", "float32": "<f4", "double": "<f8", "float64": "<f8",
+    "half": "<f2", "float16": "<f2",   # LichtFeld's 16-bit export (--ply-half); not a PLY 1.0 type
     "uchar": "u1", "uint8": "u1", "char": "i1", "int8": "i1",
     "ushort": "<u2", "uint16": "<u2", "short": "<i2", "int16": "<i2",
     "uint": "<u4", "uint32": "<u4", "int": "<i4", "int32": "<i4",
@@ -75,6 +76,8 @@ def hdr_comments(lines: list[str]) -> dict:
             out["color_max"] = float(value)
         elif key == "hdr_display_exposure":
             out["display_exposure"] = float(value)
+        elif key == "hdr_half_gain":
+            out["half_gain"] = float(value)
     return out
 
 
@@ -113,7 +116,7 @@ def write_ply(path: Path, data: np.ndarray, comments: list[str] | None = None) -
     inv = {v: k for k, v in PLY_TYPES.items()}
     for name in data.dtype.names:
         code = data.dtype[name].str.lstrip("<>|=")
-        typ = {"f4": "float", "f8": "double", "u1": "uchar", "i1": "char", "u2": "ushort", "i2": "short",
+        typ = {"f2": "half", "f4": "float", "f8": "double", "u1": "uchar", "i1": "char", "u2": "ushort", "i2": "short",
                "u4": "uint", "i4": "int"}[code]
         header.append(f"property {typ} {name}")
     header.append("end_header")
