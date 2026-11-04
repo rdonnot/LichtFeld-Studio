@@ -684,6 +684,14 @@ namespace lfs::vis {
         Buffer<float> ocio_lut_buffer_;
         std::string ocio_lut_uploaded_key_;
         Buffer<float> ocio_dummy_buffer_;
+        // Growth happens in ensureOcioBuffers, BEFORE a pass takes its command buffer: resizeDeviceBuffer splits the
+        // command batch (GrowthBatchSplitGuard), and growing inside composePixelState left the pass recording into an
+        // ended command buffer — a SIGSEGV in the driver at the first compose of every training (2026-11-04).
+        bool ocio_dummy_needs_fill_ = false;
+        bool ocio_lut_needs_upload_ = false;
+        bool ocio_lut_buffer_reused_ = false;
+        bool wantsOcioLut(const VulkanGSRendererUniforms& uniforms) const;
+        void ensureOcioBuffers(const VulkanGSRendererUniforms& uniforms);
         void prepareOcioDisplay(VulkanGSRendererUniforms& uniforms,
                                 const lfs::rendering::ViewportRenderRequest& request,
                                 const lfs::core::SplatData& splat_data);

@@ -2057,6 +2057,34 @@ namespace lfs::vis {
             dev = {};
         }
         ocio_lut_uploaded_key_.clear();
+        ocio_dummy_needs_fill_ = false;
+        ocio_lut_needs_upload_ = false;
+        ocio_lut_buffer_reused_ = false;
+    }
+
+    bool VksplatViewportRenderer::wantsOcioLut(const VulkanGSRendererUniforms& uniforms) const {
+        return uniforms.color_tonemapping == 7u && composeHdrMode(uniforms) == 1u && ocio_lut_ &&
+               ocio_lut_->size >= 2 && !ocio_lut_->rgb.empty();
+    }
+
+    // Grow the compose pass's binding-4 buffers (the 4-float dummy, the OCIO LUT when a new one is due) BEFORE the
+    // caller takes renderer_.activeCommandBuffer(): resizeDeviceBuffer ends the active command batch and begins a new
+    // one (GrowthBatchSplitGuard), so a handle taken earlier is an ended command buffer. The upload and the fill are
+    // recorded by composePixelState into the batch that is active then.
+    void VksplatViewportRenderer::ensureOcioBuffers(const VulkanGSRendererUniforms& uniforms) {
+        if (ocio_dummy_buffer_.deviceBuffer.buffer == VK_NULL_HANDLE) {
+            renderer_.resizeDeviceBuffer(ocio_dummy_buffer_, 4, true);
+            ocio_dummy_buffer_.deviceBuffer.label = "vksplat_ocio_dummy";
+            ocio_dummy_needs_fill_ = true;
+        }
+        if (wantsOcioLut(uniforms) && ocio_lut_uploaded_key_ != ocio_lut_->key && !ocio_lut_needs_upload_) {
+            const VkBuffer previous_lut_buffer = ocio_lut_buffer_.deviceBuffer.buffer;
+            renderer_.resizeDeviceBuffer(ocio_lut_buffer_, ocio_lut_->rgb.size(), true);
+            ocio_lut_buffer_.deviceBuffer.label = "vksplat_ocio_lut";
+            ocio_lut_buffer_reused_ = previous_lut_buffer != VK_NULL_HANDLE &&
+                                      ocio_lut_buffer_.deviceBuffer.buffer == previous_lut_buffer;
+            ocio_lut_needs_upload_ = true;
+        }
     }
 
     struct VksplatViewportRenderer::ComposePipeline {
@@ -6419,22 +6447,17 @@ namespace lfs::vis {
         depth_image_info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
         // OCIO display LUT: upload once per LUT key (vkCmdUpdateBuffer in this command stream, then a
-        // transfer -> compute barrier); a 4-float dummy is bound whenever no LUT is active.
-        const bool use_ocio_lut = uniforms.color_tonemapping == 7u && composeHdrMode(uniforms) == 1u && ocio_lut_ &&
-                                  ocio_lut_->size >= 2 && !ocio_lut_->rgb.empty();
-        if (ocio_dummy_buffer_.deviceBuffer.buffer == VK_NULL_HANDLE) {
-            renderer_.resizeDeviceBuffer(ocio_dummy_buffer_, 4, true);
-            ocio_dummy_buffer_.deviceBuffer.label = "vksplat_ocio_dummy";
+        // transfer -> compute barrier); a 4-float dummy is bound whenever no LUT is active. Both buffers were grown
+        // by ensureOcioBuffers before `cmd` was taken — never grow a buffer here (it splits the command batch).
+        const bool use_ocio_lut = wantsOcioLut(uniforms) && ocio_lut_buffer_.deviceBuffer.buffer != VK_NULL_HANDLE &&
+                                  (ocio_lut_uploaded_key_ == ocio_lut_->key || ocio_lut_needs_upload_);
+        if (ocio_dummy_needs_fill_ && ocio_dummy_buffer_.deviceBuffer.buffer != VK_NULL_HANDLE) {
             recordFillBuffer(cmd, ocio_dummy_buffer_.deviceBuffer, 0u);
+            ocio_dummy_needs_fill_ = false;
         }
         bool lut_uploaded_now = false;
-        if (use_ocio_lut && ocio_lut_uploaded_key_ != ocio_lut_->key) {
-            const VkBuffer previous_lut_buffer = ocio_lut_buffer_.deviceBuffer.buffer;
-            renderer_.resizeDeviceBuffer(ocio_lut_buffer_, ocio_lut_->rgb.size(), true);
-            ocio_lut_buffer_.deviceBuffer.label = "vksplat_ocio_lut";
-            if (previous_lut_buffer != VK_NULL_HANDLE && ocio_lut_buffer_.deviceBuffer.buffer == previous_lut_buffer) {
-                // Same VkBuffer re-filled in place: the previous frame's compose may still be reading it, so its
-                // compute read must finish before vkCmdUpdateBuffer writes (a grown buffer is a new allocation).
+        if (use_ocio_lut && ocio_lut_needs_upload_) {
+            if (ocio_lut_buffer_reused_) {
                 VkBufferMemoryBarrier2 reuse_barrier{};
                 reuse_barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
                 reuse_barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
@@ -6455,11 +6478,17 @@ namespace lfs::vis {
             recordUpdateBufferChunks(cmd, ocio_lut_buffer_.deviceBuffer, ocio_lut_->rgb.data(),
                                      ocio_lut_->rgb.size() * sizeof(float));
             ocio_lut_uploaded_key_ = ocio_lut_->key;
+            ocio_lut_needs_upload_ = false;
+            ocio_lut_buffer_reused_ = false;
             lut_uploaded_now = true;
             LOG_INFO("vksplat: OCIO display LUT uploaded ({}^3, {} KiB)", ocio_lut_->size,
                      ocio_lut_->rgb.size() * sizeof(float) >> 10);
         }
-        const _VulkanBuffer& lut_binding = use_ocio_lut ? ocio_lut_buffer_.deviceBuffer : ocio_dummy_buffer_.deviceBuffer;
+        // Binding 4 must name a live buffer; the shader reads it only when ocio_lut_size >= 2.
+        const _VulkanBuffer& lut_binding = use_ocio_lut ? ocio_lut_buffer_.deviceBuffer
+                                           : ocio_dummy_buffer_.deviceBuffer.buffer != VK_NULL_HANDLE
+                                               ? ocio_dummy_buffer_.deviceBuffer
+                                               : buffers_.pixel_state.deviceBuffer;
         VkDescriptorBufferInfo lut_info{};
         lut_info.buffer = lut_binding.buffer;
         lut_info.offset = lut_binding.offset;
@@ -8719,6 +8748,7 @@ namespace lfs::vis {
                 }
                 {
                     LOG_TIMER("vksplat.selection_overlay.record.composePixelState");
+                    ensureOcioBuffers(uniforms);          // before activeCommandBuffer(): growth splits the batch
                     compose_status = composePixelState(
                         context,
                         renderer_.activeCommandBuffer(),
@@ -9851,6 +9881,7 @@ namespace lfs::vis {
                 LOG_TIMER("vksplat.render.record.composePixelState");
                 // Record compose into the rasterizer's batch so the entire frame
                 // submits and waits exactly once instead of fence-blocking twice.
+                ensureOcioBuffers(uniforms);              // before activeCommandBuffer(): growth splits the batch
                 compose_status = composePixelState(
                     context,
                     renderer_.activeCommandBuffer(),
