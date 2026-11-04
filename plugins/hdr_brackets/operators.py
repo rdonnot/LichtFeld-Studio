@@ -31,7 +31,7 @@ class Settings:
     deghost: bool = True
     proxy_operator: str = "aces"
     proxy_ev: float = 0.0
-    run_sfm: bool = True
+    run_sfm: bool = False   # N'Brain solves the cameras itself (its Farm, the lens prior); on only for a stand-alone merge
     write_brackets: bool = True  # brackets/: the raw JPEGs + one pose each, what --hdr-brackets trains on
     overrides_text: str = ""
 
