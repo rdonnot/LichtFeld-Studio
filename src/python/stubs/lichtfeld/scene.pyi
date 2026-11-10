@@ -73,6 +73,32 @@ class SplatData:
         """Scene scale factor"""
 
     @property
+    def is_hdr(self) -> bool:
+        """
+        True when the SH hold log radiance (an --hdr model or a lichtfeld_hdr PLY); see docs/hdr.md
+        """
+
+    @property
+    def hdr_scale(self) -> float:
+        """
+        HDR: the scene's P99 luminance s (natural display exposure 1/s); 0 when unknown or LDR
+        """
+
+    @property
+    def hdr_color_max(self) -> float:
+        """HDR: the absolute radiance cap the kernels used; 0 when unknown or LDR"""
+
+    def set_hdr(self, log_sh: bool, scale: float, color_max: float) -> None:
+        """
+        Declare how the SH are to be read (log radiance with scale s and cap). Does not convert values.
+        """
+
+    def bake_hdr_to_ldr(self, exposure_ev: float = 0.0, tonemap: str = 'aces') -> SplatData:
+        """
+        HDR -> a new LDR SplatData at exposure_ev (EV relative to 1/s) through tonemap (none, linear, filmic, hejl, aces, aces2, neutral); any viewer shows it. An LDR input is cloned.
+        """
+
+    @property
     def num_points(self) -> int:
         """Number of Gaussians"""
 

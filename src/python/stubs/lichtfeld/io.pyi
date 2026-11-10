@@ -9,6 +9,38 @@ import lichtfeld
 import lichtfeld.scene
 
 
+def ocio_available() -> bool:
+    """
+    True when the OCIO config (--ocio, $OCIO or the built-in ACES studio config) loads.
+    """
+
+def ocio_config_name() -> str:
+    """Name of the current OCIO config."""
+
+def ocio_working_space() -> str:
+    """
+    The config's name for LichtFeld's working space lin_srgb (Linear Rec.709 / sRGB primaries, D65).
+    """
+
+def ocio_displays() -> list[str]:
+    """Display names of the current OCIO config."""
+
+def ocio_views(display: str = '') -> list[str]:
+    """View names of a display (default: the current / default display)."""
+
+def ocio_looks() -> list[str]:
+    """Look names of the current OCIO config."""
+
+def get_ocio() -> dict:
+    """
+    The resolved process-wide OCIO selection: config path (empty = $OCIO / built-in), display, view, look.
+    """
+
+def set_ocio(config: str = '', display: str = '', view: str = '', look: str = '') -> dict:
+    """
+    Set the process-wide OCIO selection (what tone 'ocio' bakes and the viewer shows); empty fields keep the current value, look='none' clears the look. Raises on an unknown name. Returns the resolved selection like get_ocio().
+    """
+
 def native_path(path: str | os.PathLike, force_extended: bool = False) -> str:
     """
     Return a filename for filesystem I/O, including extended Windows paths. Use force_extended for recursive operations. Keep the original path for UI, JSON and external commands.
@@ -899,9 +931,9 @@ def load(path: str | os.PathLike, format: str | None = None, resize_factor: int 
 def load_point_cloud(path: str | os.PathLike) -> tuple:
     """Load a PLY as point cloud, returns (means [N,3], colors [N,3]) tensors"""
 
-def save_ply(data: lichtfeld.scene.SplatData, path: str | os.PathLike, binary: bool = True, progress: object | None = None, extra_attributes: object | None = None, include_provenance: bool = True) -> None:
+def save_ply(data: lichtfeld.scene.SplatData, path: str | os.PathLike, binary: bool = True, progress: object | None = None, extra_attributes: object | None = None, include_provenance: bool = True, hdr: str = 'auto', exposure_ev: float = 0.0, tonemap: str = 'aces') -> None:
     """
-    Save splat data as PLY file with optional extra per-vertex float attributes. include_provenance (default true) writes a full provenance stamp; when false, a minimal build stamp is still embedded.
+    Save splat data as PLY file with optional extra per-vertex float attributes. HDR models: hdr = auto|linear|baked|log, exposure_ev (EV relative to 1/s) and tonemap for baked (docs/hdr.md). include_provenance (default true) writes a full provenance stamp; when false, a minimal build stamp is still embedded.
     """
 
 def save_point_cloud_ply(point_cloud: lichtfeld.scene.PointCloud, path: str | os.PathLike, extra_attributes: object | None = None, include_provenance: bool = True) -> None:
@@ -909,32 +941,32 @@ def save_point_cloud_ply(point_cloud: lichtfeld.scene.PointCloud, path: str | os
     Save a point cloud as PLY file (xyz + colors) with optional extra per-vertex float attributes. include_provenance (default true) writes a full provenance stamp; when false, a minimal build stamp is still embedded.
     """
 
-def save_sog(data: lichtfeld.scene.SplatData, path: str | os.PathLike, kmeans_iterations: int = 10, use_gpu: bool = True, progress: object | None = None, include_provenance: bool = True) -> None:
+def save_sog(data: lichtfeld.scene.SplatData, path: str | os.PathLike, kmeans_iterations: int = 10, use_gpu: bool = True, progress: object | None = None, include_provenance: bool = True, hdr: str = 'auto', exposure_ev: float = 0.0, tonemap: str = 'aces') -> None:
     """
-    Save splat data as SOG compressed file. include_provenance (default true) writes a full provenance stamp; when false, a minimal build stamp is still embedded.
-    """
-
-def save_ssog(splat: lichtfeld.scene.SplatData, path: str | os.PathLike, lod_levels: int = 4, lod_ratio: float = 0.5, chunk_count_k: int = 512, chunk_extent: float = 16.0, chunk_min_k: int = 8, kmeans_iterations: int = 10, use_gpu: bool = True, progress: object | None = None, include_provenance: bool = True) -> None:
-    """
-    Save splat data as a PlayCanvas multi-LOD SSOG (.ssog, lod-meta.json). include_provenance (default true) writes a full provenance stamp; when false, a minimal build stamp is still embedded.
+    Save splat data as SOG compressed file. HDR models: hdr = auto|linear|baked|log, exposure_ev (EV relative to 1/s) and tonemap for baked (docs/hdr.md). include_provenance (default true) writes a full provenance stamp; when false, a minimal build stamp is still embedded.
     """
 
-def save_spz(data: lichtfeld.scene.SplatData, path: str | os.PathLike, version: int = 4, include_provenance: bool = True) -> None:
+def save_ssog(splat: lichtfeld.scene.SplatData, path: str | os.PathLike, lod_levels: int = 4, lod_ratio: float = 0.5, chunk_count_k: int = 512, chunk_extent: float = 16.0, chunk_min_k: int = 8, kmeans_iterations: int = 10, use_gpu: bool = True, progress: object | None = None, include_provenance: bool = True, hdr: str = 'auto', exposure_ev: float = 0.0, tonemap: str = 'aces') -> None:
     """
-    Save splat data as SPZ compressed file.
+    Save splat data as a PlayCanvas multi-LOD SSOG (.ssog, lod-meta.json). HDR models: hdr = auto|linear|baked|log, exposure_ev (EV relative to 1/s) and tonemap for baked (docs/hdr.md). include_provenance (default true) writes a full provenance stamp; when false, a minimal build stamp is still embedded.
+    """
+
+def save_spz(data: lichtfeld.scene.SplatData, path: str | os.PathLike, version: int = 4, include_provenance: bool = True, hdr: str = 'auto', exposure_ev: float = 0.0, tonemap: str = 'aces') -> None:
+    """
+    HDR models: hdr = auto|linear|baked|log, exposure_ev (EV relative to 1/s) and tonemap for baked (docs/hdr.md). Save splat data as SPZ compressed file.
 
     version: SPZ container version, 4 (zstd, default) or 3 (legacy gzip).
     include_provenance (default true) writes a full provenance stamp; when false, a minimal build stamp is still embedded. Ignored for SPZ v3.
     """
 
-def save_usd(data: lichtfeld.scene.SplatData, path: str | os.PathLike, include_provenance: bool = True) -> None:
+def save_usd(data: lichtfeld.scene.SplatData, path: str | os.PathLike, include_provenance: bool = True, hdr: str = 'auto', exposure_ev: float = 0.0, tonemap: str = 'aces') -> None:
     """
-    Save splat data as OpenUSD gaussian file. include_provenance (default true) writes a full provenance stamp; when false, a minimal build stamp is still embedded.
+    Save splat data as OpenUSD gaussian file. HDR models: hdr = auto|linear|baked|log, exposure_ev (EV relative to 1/s) and tonemap for baked (docs/hdr.md). include_provenance (default true) writes a full provenance stamp; when false, a minimal build stamp is still embedded.
     """
 
-def save_nurec_usdz(data: lichtfeld.scene.SplatData, path: str | os.PathLike, include_provenance: bool = True) -> None:
+def save_nurec_usdz(data: lichtfeld.scene.SplatData, path: str | os.PathLike, include_provenance: bool = True, hdr: str = 'auto', exposure_ev: float = 0.0, tonemap: str = 'aces') -> None:
     """
-    Save splat data as NuRec USDZ compatible with PLY_to_USD / Omniverse. include_provenance (default true) writes a full provenance stamp; when false, a minimal build stamp is still embedded.
+    Save splat data as NuRec USDZ compatible with PLY_to_USD / Omniverse. HDR models: hdr = auto|linear|baked|log, exposure_ev (EV relative to 1/s) and tonemap for baked (docs/hdr.md). include_provenance (default true) writes a full provenance stamp; when false, a minimal build stamp is still embedded.
     """
 
 def export_html(data: lichtfeld.scene.SplatData, path: str | os.PathLike, kmeans_iterations: int = 10, progress: object | None = None, include_provenance: bool = True, background_color: object | None = None) -> None:

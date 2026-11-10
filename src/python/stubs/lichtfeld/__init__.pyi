@@ -445,9 +445,9 @@ def prepare_gallery_project(source_path: str, destination: str, payload_format: 
     Prepare a saved .licht project on the managed export worker without opening it in the editor. Destination must be a fresh staging directory. Poll ui.get_export_state() for progress, errors and commit_uuid.
     """
 
-def export_scene(format: int, path: str, node_names: Sequence[str], sh_degree: int, rad_flip_y: bool = False, rad_streamable: bool = True, spz_version: int = 4, include_provenance: bool = True, *, lod_levels: int = 4, lod_ratio: float = 0.5, chunk_count_k: int = 512, chunk_extent: float = 16.0, chunk_min_k: int = 8, kmeans_iterations: int = 10) -> None:
+def export_scene(format: int, path: str, node_names: Sequence[str], sh_degree: int, rad_flip_y: bool = False, rad_streamable: bool = True, spz_version: int = 4, include_provenance: bool = True, *, lod_levels: int = 4, lod_ratio: float = 0.5, chunk_count_k: int = 512, chunk_extent: float = 16.0, chunk_min_k: int = 8, kmeans_iterations: int = 10, hdr: str = 'auto', hdr_exposure_ev: float = 0.0, hdr_tonemap: str = 'aces') -> None:
     """
-    Export scene nodes to file or directory. Format: 0=PLY, 1=SOG, 2=SPZ, 3=HTML, 4=USD, 5=USDZ NuRec, 6=RAD, 7=COLMAP, 8=SSOG, 13=GLB. For SSOG, path names a .ssog bundle or directory; lod_levels, lod_ratio, chunk_count_k, chunk_extent, chunk_min_k and kmeans_iterations control its LODs and chunks. spz_version is 3 (legacy gzip) or 4 (zstd, default) and is only used for SPZ. include_provenance (default true) writes a full provenance stamp into the format metadata slot; when false, a minimal build stamp is still embedded. Ignored for COLMAP and SPZ v3.
+    Export scene nodes to file or directory. Format: 0=PLY, 1=SOG, 2=SPZ, 3=HTML, 4=USD, 5=USDZ NuRec, 6=RAD, 7=COLMAP, 8=SSOG, 13=GLB. HDR models: hdr = auto (PLY: linear radiance; others: refused) | linear | baked (LDR at hdr_exposure_ev through hdr_tonemap) | log (PLY only). For SSOG, path names a .ssog bundle or directory; lod_levels, lod_ratio, chunk_count_k, chunk_extent, chunk_min_k and kmeans_iterations control its LODs and chunks. spz_version is 3 (legacy gzip) or 4 (zstd, default) and is only used for SPZ. include_provenance (default true) writes a full provenance stamp into the format metadata slot; when false, a minimal build stamp is still embedded. Ignored for COLMAP and SPZ v3.
     """
 
 def save_config_file(path: str) -> None:
@@ -2336,6 +2336,81 @@ class OptimizationParams:
     def hdr_color_max(self, arg: float, /) -> None: ...
 
     @property
+    def hdr_brackets(self) -> bool:
+        """
+        HDR trained directly on the bracket JPEGs through the fixed Debevec LUT of hdr_crf (implies hdr)
+        """
+
+    @hdr_brackets.setter
+    def hdr_brackets(self, arg: bool, /) -> None: ...
+
+    @property
+    def hdr_crf(self) -> str:
+        """
+        crf.json of the bracket set (log_irradiance[3][256] + exif_ev_ref); required with hdr_brackets
+        """
+
+    @hdr_crf.setter
+    def hdr_crf(self, arg: str, /) -> None: ...
+
+    @property
+    def hdr_exposure(self) -> str:
+        """
+        Per-frame exposure in bracket mode: 'exif' (frozen at the EXIF gain) or 'learn' (EXIF gain x 2^delta)
+        """
+
+    @hdr_exposure.setter
+    def hdr_exposure(self, arg: str, /) -> None: ...
+
+    @property
+    def hdr_exposure_prior(self) -> float:
+        """Weight of mean(delta^2) in the loss (bracket mode, learn)"""
+
+    @hdr_exposure_prior.setter
+    def hdr_exposure_prior(self, arg: float, /) -> None: ...
+
+    @property
+    def hdr_exposure_lr(self) -> float:
+        """Adam learning rate of the exposure deltas (bracket mode, learn)"""
+
+    @hdr_exposure_lr.setter
+    def hdr_exposure_lr(self, arg: float, /) -> None: ...
+
+    @property
+    def hdr_exposure_max_delta(self) -> float:
+        """Largest |delta| of a frame's exposure from its EXIF gain, in stops"""
+
+    @hdr_exposure_max_delta.setter
+    def hdr_exposure_max_delta(self, arg: float, /) -> None: ...
+
+    @property
+    def hdr_bracket_bg(self) -> float:
+        """
+        Bracket training: random per-pixel background in [0, value * hdr_scale] radiance; 0 = solid
+        """
+
+    @hdr_bracket_bg.setter
+    def hdr_bracket_bg(self, arg: float, /) -> None: ...
+
+    @property
+    def hdr_bracket_hat(self) -> float:
+        """
+        Bracket training: Debevec's hat of the JPEG code to this power as the per-pixel loss / error-map weight; 0 = off
+        """
+
+    @hdr_bracket_hat.setter
+    def hdr_bracket_hat(self, arg: float, /) -> None: ...
+
+    @property
+    def hdr_bracket_err_ema(self) -> float:
+        """
+        Bracket training: densification error map as an EMA per camera position across the bracket's frames (weight on the current frame); 0 = off
+        """
+
+    @hdr_bracket_err_ema.setter
+    def hdr_bracket_err_ema(self, arg: float, /) -> None: ...
+
+    @property
     def use_exposure_correction(self) -> bool:
         """Enable combined per-photo exposure correction"""
 
@@ -2781,6 +2856,15 @@ class DatasetParams:
 
     @test_every.setter
     def test_every(self, arg: int, /) -> None: ...
+
+    @property
+    def test_by_position(self) -> bool:
+        """
+        Hold out every Nth position (image name up to its last '_') with all its frames
+        """
+
+    @test_by_position.setter
+    def test_by_position(self, arg: bool, /) -> None: ...
 
     @property
     def resize_factor(self) -> int:
