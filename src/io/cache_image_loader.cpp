@@ -269,7 +269,8 @@ namespace lfs::io {
                 throw std::runtime_error(std::string("CPU-decoded image upload failed: ") + cudaGetErrorString(status));
         }
 
-        // Float16 is only a 2-byte container for uint16 samples (no UInt16 dtype).
+        // Float16 is only a 2-byte container for uint16 samples (no UInt16 dtype); float samples (an HDR EXR) stay
+        // Float32 and unbounded.
         template <typename T>
         lfs::core::Tensor upload_hwc(const T* data, const int width, const int height, const int channels,
                                      const cudaStream_t stream) {
@@ -277,7 +278,10 @@ namespace lfs::io {
             const auto cpu = Tensor::from_blob(
                 const_cast<T*>(data),
                 TensorShape({static_cast<size_t>(height), static_cast<size_t>(width), static_cast<size_t>(channels)}),
-                Device::CPU, std::is_same_v<T, uint16_t> ? DataType::Float16 : DataType::UInt8);
+                Device::CPU,
+                std::is_same_v<T, float>      ? DataType::Float32
+                : std::is_same_v<T, uint16_t> ? DataType::Float16
+                                              : DataType::UInt8);
             auto gpu = cpu.to(Device::CUDA, stream);
             gpu.set_name("io.image.gpu_staging");
             return gpu;
@@ -312,12 +316,19 @@ namespace lfs::io {
             const size_t W = hwc.shape()[1];
             const size_t C = hwc.shape()[2];
             const bool sixteen_bit = hwc.dtype() == DataType::Float16;
+            const bool linear_float = hwc.dtype() == DataType::Float32;
             const auto [target_width, target_height] = resized_image_dimensions(
                 static_cast<int>(W), static_cast<int>(H), resize_factor, max_width);
             const cudaStream_t stream = requested_stream ? requested_stream : hwc.stream();
             hwc.sync_to_stream(stream);
             Tensor output;
-            if (static_cast<size_t>(target_width) != W || static_cast<size_t>(target_height) != H) {
+            if (linear_float) {
+                // HDR radiance: no [0,1] grid, no byte output; Lanczos keeps values past 1.
+                assert(!output_uint8);
+                const bool resize = static_cast<size_t>(target_width) != W || static_cast<size_t>(target_height) != H;
+                output = resize ? lanczos_to_chw(hwc, target_width, target_height, stream, exact_mask_alpha)
+                                : hwc.permute({2, 0, 1}).contiguous();
+            } else if (static_cast<size_t>(target_width) != W || static_cast<size_t>(target_height) != H) {
                 Tensor source = hwc;
                 if (sixteen_bit) {
                     source = Tensor::empty(hwc.shape(), Device::CUDA, DataType::Float32);
@@ -470,7 +481,8 @@ namespace lfs::io {
 
     lfs::core::Tensor load_rgba_image_cpu_decoded(
         const std::filesystem::path& path, const int resize_factor, const int max_width, void* const cuda_stream,
-        const bool decode_16bit, const bool exact_mask_alpha, const MaskedImageFill* masked_fill) {
+        const bool decode_16bit, const bool exact_mask_alpha, const MaskedImageFill* masked_fill,
+        const bool decode_float) {
         using namespace lfs::core;
         const auto stream = static_cast<cudaStream_t>(cuda_stream);
         const auto finish = [&](const auto* data, const int width, const int height, const int channels) {
@@ -481,6 +493,12 @@ namespace lfs::io {
                 fill_masked_image(staging, *masked_fill, staging.stream());
             return hwc_to_chw(staging, resize_factor, max_width, false, stream, exact_mask_alpha);
         };
+        if (decode_float) {
+            // HDR training on RGBA EXRs: the u16/u8 decoders below quantise to [0,1] and lose every value past 1.
+            auto [data, width, height, channels] = load_image_float(path);
+            const std::unique_ptr<float, decltype(&free_image_float)> owned(data, &free_image_float);
+            return finish(owned.get(), width, height, channels);
+        }
         if (decode_16bit) {
             auto [data, width, height, channels] = load_image_with_alpha_u16(path, 1, 0);
             const std::unique_ptr<uint16_t, decltype(&free_image)> owned(data, &free_image);

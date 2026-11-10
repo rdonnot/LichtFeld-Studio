@@ -3018,7 +3018,8 @@ namespace lfs::io {
                         item.undistort ? 1 : item.params.resize_factor,
                         item.undistort ? 0 : item.params.max_width,
                         nullptr,
-                        config_.use_16bit_color, !item.alpha_is_transparency, item.fill_masked_rgb ? &fill : nullptr);
+                        config_.use_16bit_color, !item.alpha_is_transparency, item.fill_masked_rgb ? &fill : nullptr,
+                        decodes_float(item.path, item.params));
                     const size_t H = rgba.shape()[1];
                     const size_t W = rgba.shape()[2];
                     auto rgb = rgba.slice(0, 0, 3).contiguous();

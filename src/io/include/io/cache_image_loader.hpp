@@ -72,10 +72,12 @@ namespace lfs::io {
                                                   const LoadParams& params);
     LFS_IO_API lfs::core::Tensor upload_rgb_image(const std::uint16_t* data, int width, int height, int channels,
                                                   const LoadParams& params);
-    // Same for RGBA sources; returns float32 [4, H, W] with alpha in [0, 1].
+    // Same for RGBA sources; returns float32 [4, H, W] with alpha in [0, 1]. decode_float (HDR, a float EXR) keeps
+    // the colour as linear radiance, unclamped; otherwise it is quantised to [0, 1].
     LFS_IO_API lfs::core::Tensor load_rgba_image_cpu_decoded(
         const std::filesystem::path& path, int resize_factor, int max_width, void* cuda_stream = nullptr,
-        bool decode_16bit = false, bool exact_mask_alpha = false, const MaskedImageFill* masked_fill = nullptr);
+        bool decode_16bit = false, bool exact_mask_alpha = false, const MaskedImageFill* masked_fill = nullptr,
+        bool decode_float = false);
 
     struct CachedImageData {
         std::shared_ptr<lfs::core::Tensor> tensor;

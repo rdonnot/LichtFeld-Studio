@@ -804,6 +804,7 @@ set(TEST_FILES
     test_hdr_display_chain.cpp
     test_eval_split.cpp
     test_hdr_bracket_stage.cpp
+    test_hdr_rgba_load.cpp
     test_sh_swizzle_layout.cpp
     test_shn_bda_index_math.cpp
     test_python_io.cpp
@@ -1439,6 +1440,16 @@ set_tests_properties(lichtfeld.hdr_bracket_stage PROPERTIES
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     LABELS "fast;gpu;hdr"
     TIMEOUT 120
+)
+
+# HDR fork: an RGBA EXR decoded for HDR training keeps its radiance past 1 (the RGBA decode used to quantise it).
+add_test(NAME lichtfeld.hdr_rgba_load
+    COMMAND $<TARGET_FILE:lichtfeld_tests> "--gtest_filter=HdrRgbaLoadTest.*" --gtest_color=no
+)
+set_tests_properties(lichtfeld.hdr_rgba_load PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    LABELS "fast;gpu;hdr"
+    TIMEOUT 60
 )
 
 # HDR fork (PLAN.md M3 §1): the position hold-out rule (no GPU).
